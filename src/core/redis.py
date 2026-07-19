@@ -21,10 +21,10 @@ def get_redis_pool() -> ConnectionPool:
         redis_pool = ConnectionPool.from_url(
             settings.redis_dsn,
             decode_responses=True,
-            max_connections=50,       # Adjust based on expected load
-            socket_timeout=5.0,        # Fail fast if connection drops
-            socket_connect_timeout=5.0,# Connection establishment timeout
-            retry_on_timeout=True,     # Retry on transient failures
+            max_connections=50,  # Adjust based on expected load
+            socket_timeout=5.0,  # Fail fast if connection drops
+            socket_connect_timeout=5.0,  # Connection establishment timeout
+            retry_on_timeout=True,  # Retry on transient failures
         )
     return redis_pool
 
@@ -53,8 +53,12 @@ async def close_redis() -> None:
     global redis_pool
     if redis_pool is not None:
         logger.info("Disconnecting and closing Redis connection pool...")
-        await redis_pool.disconnect()
-        redis_pool = None
+        try:
+            await redis_pool.disconnect()
+        except Exception as e:
+            logger.warning(f"Error disconnecting Redis pool: {e}")
+        finally:
+            redis_pool = None
 
 
 async def health_check() -> bool:

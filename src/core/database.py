@@ -76,6 +76,10 @@ async def close_db() -> None:
     """Dispose of the database engine to cleanly release all connections in the pool."""
     global engine, AsyncSessionLocal
     if engine is not None:
-        await engine.dispose()
-        engine = None
+        try:
+            await engine.dispose()
+        except Exception:
+            pass
+        finally:
+            engine = None
     AsyncSessionLocal = None

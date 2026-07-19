@@ -68,9 +68,7 @@ def test_register_user_already_exists(client, mock_user_repo):
     password = "securepassword123"
 
     # Mock existing user
-    mock_user_repo.get_by_email.return_value = User(
-        email=email, password_hash="hash"
-    )
+    mock_user_repo.get_by_email.return_value = User(email=email, password_hash="hash")
 
     # Act
     response = client.post(

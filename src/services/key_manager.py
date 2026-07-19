@@ -23,6 +23,7 @@ def encrypt_private_key(private_key_pem: bytes, master_key_hex: str) -> str:
     # Return as compound colon-separated hex string
     return f"{nonce.hex()}:{encrypted_bytes.hex()}"
 
+
 def decrypt_private_key(encrypted_payload: str, master_key_hex: str) -> bytes:
     key = bytes.fromhex(master_key_hex)
     aesgcm = AESGCM(key)
@@ -30,6 +31,7 @@ def decrypt_private_key(encrypted_payload: str, master_key_hex: str) -> bytes:
     nonce = bytes.fromhex(nonce_hex)
     ciphertext = bytes.fromhex(ciphertext_hex)
     return aesgcm.decrypt(nonce, ciphertext, None)
+
 
 def generate_key_pair(algorithm: str) -> tuple[bytes, bytes]:
     """
@@ -41,6 +43,7 @@ def generate_key_pair(algorithm: str) -> tuple[bytes, bytes]:
     Returns:
         tuple[bytes, bytes]: (private_key_pem, public_key_pem) as PEM encoded bytes.
     """
+    private_key: rsa.RSAPrivateKey | ec.EllipticCurvePrivateKey
     if algorithm == "RS256":
         private_key = rsa.generate_private_key(
             public_exponent=65537,
@@ -90,7 +93,7 @@ async def jwks(session: AsyncSession) -> dict:
                     SigningKey.is_active.is_(False),
                     SigningKey.deactivated_at.isnot(None),
                     SigningKey.deactivated_at >= grace_cutoff,
-                )
+                ),
             )
         )
     )
@@ -99,35 +102,47 @@ async def jwks(session: AsyncSession) -> dict:
     jwk_keys = []
     for key in active_keys:
         # Load the public key directly from the database without decrypting the private key
-        public_key = serialization.load_pem_public_key(key.public_key_pem.encode("utf-8"))
+        public_key = serialization.load_pem_public_key(
+            key.public_key_pem.encode("utf-8")
+        )
 
         if key.algorithm == "RS256" and isinstance(public_key, rsa.RSAPublicKey):
-            public_numbers = public_key.public_numbers()
+            rsa_public_numbers = public_key.public_numbers()
             # RSA exponents and modulus should be converted to minimum length byte representations (Base64urlUInt)
-            e_bytes = public_numbers.e.to_bytes((public_numbers.e.bit_length() + 7) // 8 or 1, "big")
-            n_bytes = public_numbers.n.to_bytes((public_numbers.n.bit_length() + 7) // 8 or 1, "big")
-            jwk_keys.append({
-                "kty": "RSA",
-                "kid": key.kid,
-                "use": "sig",
-                "alg": key.algorithm,
-                "n": base64.urlsafe_b64encode(n_bytes).decode("utf-8").rstrip("="),
-                "e": base64.urlsafe_b64encode(e_bytes).decode("utf-8").rstrip("="),
-            })
-        elif key.algorithm == "ES256" and isinstance(public_key, ec.EllipticCurvePublicKey):
-            public_numbers = public_key.public_numbers()
+            e_bytes = rsa_public_numbers.e.to_bytes(
+                (rsa_public_numbers.e.bit_length() + 7) // 8 or 1, "big"
+            )
+            n_bytes = rsa_public_numbers.n.to_bytes(
+                (rsa_public_numbers.n.bit_length() + 7) // 8 or 1, "big"
+            )
+            jwk_keys.append(
+                {
+                    "kty": "RSA",
+                    "kid": key.kid,
+                    "use": "sig",
+                    "alg": key.algorithm,
+                    "n": base64.urlsafe_b64encode(n_bytes).decode("utf-8").rstrip("="),
+                    "e": base64.urlsafe_b64encode(e_bytes).decode("utf-8").rstrip("="),
+                }
+            )
+        elif key.algorithm == "ES256" and isinstance(
+            public_key, ec.EllipticCurvePublicKey
+        ):
+            ec_public_numbers = public_key.public_numbers()
             # For P-256 curve (ES256), the coordinate byte length must be exactly 32 bytes (padded with leading zeros if necessary)
-            x_bytes = public_numbers.x.to_bytes(32, "big")
-            y_bytes = public_numbers.y.to_bytes(32, "big")
-            jwk_keys.append({
-                "kty": "EC",
-                "kid": key.kid,
-                "use": "sig",
-                "alg": key.algorithm,
-                "crv": "P-256",
-                "x": base64.urlsafe_b64encode(x_bytes).decode("utf-8").rstrip("="),
-                "y": base64.urlsafe_b64encode(y_bytes).decode("utf-8").rstrip("="),
-            })
+            x_bytes = ec_public_numbers.x.to_bytes(32, "big")
+            y_bytes = ec_public_numbers.y.to_bytes(32, "big")
+            jwk_keys.append(
+                {
+                    "kty": "EC",
+                    "kid": key.kid,
+                    "use": "sig",
+                    "alg": key.algorithm,
+                    "crv": "P-256",
+                    "x": base64.urlsafe_b64encode(x_bytes).decode("utf-8").rstrip("="),
+                    "y": base64.urlsafe_b64encode(y_bytes).decode("utf-8").rstrip("="),
+                }
+            )
 
     jwks_dict = {"keys": jwk_keys}
 
@@ -138,6 +153,7 @@ async def jwks(session: AsyncSession) -> dict:
         pass
 
     return jwks_dict
+
 
 async def publish_new_key(
     db: AsyncSession,
@@ -197,9 +213,7 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
     rotation_threshold = now - timedelta(days=30)
 
     # 1. Fetch all active keys
-    result = await db.execute(
-        select(SigningKey).where(SigningKey.is_active)
-    )
+    result = await db.execute(select(SigningKey).where(SigningKey.is_active))
     active_keys = result.scalars().all()
     if not active_keys:
         new_rs_key = await publish_new_key(
@@ -213,8 +227,6 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
             master_key_hex=master_key_hex,
         )
         rotated_keys = [new_rs_key, new_es_key]
-
-
 
     rotated_keys = []
     # Track algorithms that have been rotated, to avoid generating multiple keys of the same algorithm
@@ -249,4 +261,3 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
             pass
 
     return rotated_keys
-

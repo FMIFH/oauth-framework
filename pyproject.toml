@@ -36,5 +36,13 @@ build-backend = "poetry.core.masonry.api"
 
 [dependency-groups]
 dev = [
-    "ipykernel (>=7.3.0,<8.0.0)"
+    "ipykernel (>=7.3.0,<8.0.0)",
+    "ruff (>=0.15.22,<0.16.0)",
+    "mypy (>=2.3.0,<3.0.0)",
+    "pytest-cov (>=7.1.0,<8.0.0)"
+]
+
+[tool.mypy]
+plugins = [
+    "pydantic.mypy"
 ]

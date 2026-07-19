@@ -48,7 +48,7 @@ async def health_check():
         status=status,
         database=db_ok,
         redis=redis_ok,
-        timestamp=datetime.now(timezone.utc).isoformat()
+        timestamp=datetime.now(timezone.utc).isoformat(),
     )
 
 

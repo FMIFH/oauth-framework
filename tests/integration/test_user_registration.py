@@ -22,6 +22,7 @@ class FakeAsyncSession:
                 instance.id = uuid.uuid4()
             if not instance.created_at:
                 from datetime import datetime, timezone
+
                 instance.created_at = datetime.now(timezone.utc)
             if instance.is_locked is None:
                 instance.is_locked = False
