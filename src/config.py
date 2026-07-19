@@ -9,7 +9,7 @@ class SecuritySettings(BaseSettings):
     postgres_dsn: str = Field(..., description="PostgreSQL async connection string")
     redis_dsn: str = Field(..., description="Redis connection string")
     issuer_url: str = Field(
-        "https://auth.example.com", description="Authorization Server Issuer URL"
+        "http://localhost:8000", description="Authorization Server Issuer URL"
     )
     master_encryption_key: str = Field(
         ..., description="64-character Hex string for private key encryption"

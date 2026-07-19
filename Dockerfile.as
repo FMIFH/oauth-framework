@@ -33,6 +33,8 @@ COPY --from=builder /app/.venv /app/.venv
 COPY src/ ./src
 COPY alembic/ ./alembic
 COPY alembic.ini .
+COPY migrate.py .
+COPY scripts/ ./scripts
 
 ENV PATH=/app/.venv/bin:$PATH
 ENV PYTHONDONTWRITEBYTECODE=1

@@ -33,8 +33,39 @@ services:
       OAUTH_REDIS_DSN: redis://redis:6379/0
       OAUTH_MASTER_ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
+
+  db-migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.as
+    container_name: oauth-db-migrate
+    entrypoint: ["python", "migrate.py", "upgrade", "head"]
+    environment:
+      OAUTH_POSTGRES_DSN: postgresql+asyncpg://postgres:password@postgres:5432/oauth
+      OAUTH_REDIS_DSN: redis://redis:6379/0
+      OAUTH_MASTER_ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    depends_on:
       - postgres
-      - redis
+
+  key-rotation-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.as
+    container_name: oauth-key-rotation-worker
+    entrypoint: ["python", "scripts/worker.py"]
+    environment:
+      OAUTH_POSTGRES_DSN: postgresql+asyncpg://postgres:password@postgres:5432/oauth
+      OAUTH_REDIS_DSN: redis://redis:6379/0
+      OAUTH_MASTER_ENCRYPTION_KEY: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_started
 
 volumes:
   postgres_data:

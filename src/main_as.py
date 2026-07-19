@@ -7,7 +7,9 @@ from src.core.database import close_db, get_engine
 from src.core.database import health_check as db_health_check
 from src.core.redis import close_redis, get_redis_pool
 from src.core.redis import health_check as redis_health_check
+from src.routers.oauth import router as oauth_router
 from src.routers.user import router as user_router
+from src.routers.well_knonw import router as well_known_router
 from src.schemas.health_schema import HealthCheckResponse
 
 
@@ -16,6 +18,7 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize DB Engine and Redis Connection Pool
     get_engine()
     get_redis_pool()
+
     yield
     # Shutdown: Close Redis Connection Pool and DB Engine
     await close_redis()
@@ -51,3 +54,5 @@ async def health_check():
 
 # Register routers
 app.include_router(user_router)
+app.include_router(oauth_router)
+app.include_router(well_known_router)
