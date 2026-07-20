@@ -43,6 +43,18 @@ dev = [
 ]
 
 [tool.mypy]
-plugins = [
-    "pydantic.mypy"
-]
+follow_imports = "silent"
+ignore_missing_imports = true
+files = ["api", "tests"]
+namespace_packages = true
+explicit_package_bases = true
+plugins = ["sqlalchemy.ext.mypy.plugin"]
+
+[tool.ruff]
+line-length = 110
+
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "C", "N", "I"]
+ignore = ["C408", "N815"]
+fixable = ["ALL"]

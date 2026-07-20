@@ -1,3 +1,4 @@
+import typing
 import urllib.parse
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Response, status
@@ -35,9 +36,7 @@ async def register_user(
         password_hash = hash_password(body.password)
 
         # Create the user
-        user = await user_repo.create_user(
-            email=body.email, password_hash=password_hash, is_active=True
-        )
+        user = await user_repo.create_user(email=body.email, password_hash=password_hash, is_active=True)
 
         return UserRegisterResponse(
             id=str(user.id),
@@ -82,16 +81,16 @@ async def login_page(
             <p class="text-gray-500 text-sm mt-1">Access your OAuth Authorization Server account</p>
         </div>
 
-        {f'<div class="bg-red-50 border-l-4 border-red-500 p-4 mb-4 text-sm text-red-700 rounded" role="alert">{error}</div>' if error else ''}
+        {f'<div class="bg-red-50 border-l-4 border-red-500 p-4 mb-4 text-sm text-red-700 rounded" role="alert">{error}</div>' if error else ""}
 
         <form action="/users/login" method="POST" class="space-y-4">
-            <input type="hidden" name="response_type" value="{response_type or ''}">
-            <input type="hidden" name="client_id" value="{client_id or ''}">
-            <input type="hidden" name="redirect_uri" value="{redirect_uri or ''}">
-            <input type="hidden" name="scope" value="{scope or ''}">
-            <input type="hidden" name="state" value="{state or ''}">
-            <input type="hidden" name="code_challenge" value="{code_challenge or ''}">
-            <input type="hidden" name="code_challenge_method" value="{code_challenge_method or ''}">
+            <input type="hidden" name="response_type" value="{response_type or ""}">
+            <input type="hidden" name="client_id" value="{client_id or ""}">
+            <input type="hidden" name="redirect_uri" value="{redirect_uri or ""}">
+            <input type="hidden" name="scope" value="{scope or ""}">
+            <input type="hidden" name="state" value="{state or ""}">
+            <input type="hidden" name="code_challenge" value="{code_challenge or ""}">
+            <input type="hidden" name="code_challenge_method" value="{code_challenge_method or ""}">
 
             <div>
                 <label for="email" class="block text-sm font-medium text-gray-700">Email Address</label>
@@ -109,7 +108,7 @@ async def login_page(
         </form>
     </div>
 </body>
-</html>"""
+</html>"""  # noqa: E501
     return html_content
 
 
@@ -165,21 +164,28 @@ async def login(
 
     # If part of OAuth authorize flow, redirect back to authorize
     if client_id and redirect_uri:
-        params = {
+        raw_params = {
             "response_type": response_type,
             "client_id": client_id,
             "redirect_uri": redirect_uri,
-            "scope": scope or "",
-            "state": state or "",
-            "code_challenge": code_challenge or "",
-            "code_challenge_method": code_challenge_method or "",
+            "scope": scope,
+            "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
         }
-        params = {k: v for k, v in params.items() if v is not None}
-        query_string = urllib.parse.urlencode(params)
-        return RedirectResponse(
+        auth_params = typing.cast(dict[str, str], {k: v for k, v in raw_params.items() if v is not None})
+        query_string = urllib.parse.urlencode(auth_params)
+        redirect_response = RedirectResponse(
             url=f"/oauth/authorize?{query_string}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
+        redirect_response.set_cookie(
+            key="user_session",
+            value=str(user.id),
+            httponly=True,
+            max_age=3600,  # 1 hour
+            samesite="lax",
+        )
+        return redirect_response
 
     return {"message": "Login successful", "user_id": str(user.id)}
-

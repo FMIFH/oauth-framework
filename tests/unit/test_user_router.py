@@ -124,12 +124,13 @@ def test_login_page_renders(client):
     # Assert
     assert response.status_code == status.HTTP_200_OK
     assert "Sign In" in response.text
-    assert "name=\"client_id\" value=\"test-client\"" in response.text
+    assert 'name="client_id" value="test-client"' in response.text
 
 
 def test_login_success_without_oauth(client, mock_user_repo):
     # Arrange
     from src.core.security import hash_password
+
     email = "user@example.com"
     password = "correct_password"
 
@@ -160,6 +161,7 @@ def test_login_success_without_oauth(client, mock_user_repo):
 def test_login_success_with_oauth(client, mock_user_repo):
     # Arrange
     from src.core.security import hash_password
+
     email = "user@example.com"
     password = "correct_password"
 
@@ -210,4 +212,3 @@ def test_login_failure(client, mock_user_repo):
     location = response.headers["location"]
     assert "/users/login" in location
     assert "error=Invalid+email+or+password" in location
-

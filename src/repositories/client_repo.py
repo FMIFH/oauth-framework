@@ -24,13 +24,9 @@ class ClientRepository:
     ) -> Client:
         """Create a new OAuth client in the database."""
         serialized_redirect_uris = (
-            json.dumps(redirect_uris)
-            if isinstance(redirect_uris, list)
-            else redirect_uris
+            json.dumps(redirect_uris) if isinstance(redirect_uris, list) else redirect_uris
         )
-        serialized_grant_types = (
-            ",".join(grant_types) if isinstance(grant_types, list) else grant_types
-        )
+        serialized_grant_types = ",".join(grant_types) if isinstance(grant_types, list) else grant_types
         serialized_scope = " ".join(scope) if isinstance(scope, list) else scope
 
         client = Client(
@@ -85,9 +81,7 @@ class ClientRepository:
 
     async def get_client_secrets(self, client_id: uuid.UUID) -> list[ClientSecret]:
         """Retrieve all secrets associated with a client ID."""
-        result = await self.db.execute(
-            select(ClientSecret).where(ClientSecret.client_id == client_id)
-        )
+        result = await self.db.execute(select(ClientSecret).where(ClientSecret.client_id == client_id))
         return list(result.scalars().all())
 
     async def get_active_secrets(self, client_id: uuid.UUID) -> list[ClientSecret]:
@@ -103,9 +97,7 @@ class ClientRepository:
 
     async def delete_client_secret(self, secret_id: uuid.UUID) -> bool:
         """Delete a client secret from the database."""
-        result = await self.db.execute(
-            select(ClientSecret).where(ClientSecret.id == secret_id)
-        )
+        result = await self.db.execute(select(ClientSecret).where(ClientSecret.id == secret_id))
         secret = result.scalar_one_or_none()
         if secret:
             await self.db.delete(secret)

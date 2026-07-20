@@ -13,9 +13,7 @@ class UserRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create_user(
-        self, email: str, password_hash: str, is_active: bool = False
-    ) -> User:
+    async def create_user(self, email: str, password_hash: str, is_active: bool = False) -> User:
         """Create a new user in the database."""
         user = User(
             email=email,

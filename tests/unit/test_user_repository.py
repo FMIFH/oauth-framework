@@ -20,9 +20,7 @@ async def test_create_user():
     password_hash = "hashed_pw"
 
     # Act
-    user = await repo.create_user(
-        email=email, password_hash=password_hash, is_active=True
-    )
+    user = await repo.create_user(email=email, password_hash=password_hash, is_active=True)
 
     # Assert
     assert user.email == email

@@ -51,9 +51,7 @@ class FakeAsyncSession:
 
         mock_result = MagicMock()
         if email:
-            found_user = next(
-                (u for u in self.users.values() if u.email == email), None
-            )
+            found_user = next((u for u in self.users.values() if u.email == email), None)
             mock_result.scalar_one_or_none.return_value = found_user
         elif user_id:
             # Handle uuid lookup

@@ -17,9 +17,7 @@ from src.services.key_manager import (
 def mock_redis(monkeypatch):
     mock_client = AsyncMock()
     mock_client.get.return_value = None
-    monkeypatch.setattr(
-        "src.services.key_manager.get_redis_client", lambda: mock_client
-    )
+    monkeypatch.setattr("src.services.key_manager.get_redis_client", lambda: mock_client)
     return mock_client
 
 
@@ -93,12 +91,8 @@ async def test_publish_new_key_rs256():
     assert signing_key.public_key_pem.startswith("-----BEGIN PUBLIC KEY-----")
 
     # Decrypt private key and verify
-    decrypted_private_pem = decrypt_private_key(
-        signing_key.encrypted_private_key, master_key_hex
-    )
-    private_key = serialization.load_pem_private_key(
-        decrypted_private_pem, password=None
-    )
+    decrypted_private_pem = decrypt_private_key(signing_key.encrypted_private_key, master_key_hex)
+    private_key = serialization.load_pem_private_key(decrypted_private_pem, password=None)
     assert isinstance(private_key, rsa.RSAPrivateKey)
 
     mock_db.add.assert_called_once_with(signing_key)
@@ -131,12 +125,8 @@ async def test_publish_new_key_es256_auto_kid():
     assert signing_key.public_key_pem.startswith("-----BEGIN PUBLIC KEY-----")
 
     # Decrypt private key and verify
-    decrypted_private_pem = decrypt_private_key(
-        signing_key.encrypted_private_key, master_key_hex
-    )
-    private_key = serialization.load_pem_private_key(
-        decrypted_private_pem, password=None
-    )
+    decrypted_private_pem = decrypt_private_key(signing_key.encrypted_private_key, master_key_hex)
+    private_key = serialization.load_pem_private_key(decrypted_private_pem, password=None)
     assert isinstance(private_key, ec.EllipticCurvePrivateKey)
 
     mock_db.add.assert_called_once_with(signing_key)
@@ -187,7 +177,8 @@ async def test_jwks():
     assert rsa_jwk["alg"] == "RS256"
     assert isinstance(rsa_jwk["n"], str)
     assert isinstance(rsa_jwk["e"], str)
-    # Check that it's base64url encoded (no '+' or '/' and no hex characters only, plus no trailing padding '=')
+    # Check that it's base64url encoded
+    # (no '+' or '/' and no hex characters only, plus no trailing padding '=')
     assert "=" not in rsa_jwk["n"]
     assert "=" not in rsa_jwk["e"]
 
@@ -255,9 +246,7 @@ async def test_rotate_keys_with_old_keys(monkeypatch):
     async def mock_publish_new_key(db, algorithm, master_key_hex, kid=None):
         return new_key_mock
 
-    monkeypatch.setattr(
-        "src.services.key_manager.publish_new_key", mock_publish_new_key
-    )
+    monkeypatch.setattr("src.services.key_manager.publish_new_key", mock_publish_new_key)
 
     # Active key that is 35 days old
     old_key = SigningKey(

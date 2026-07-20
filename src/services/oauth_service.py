@@ -2,16 +2,20 @@ import base64
 import hashlib
 import json
 import secrets
+import urllib.parse
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
 from redis.asyncio import Redis
 
 from src.config import settings
 from src.core.redis import get_redis
-from src.exceptions.invalid_scope_exception import InvalidScopeException
+from src.exceptions.invalid_scope_exception import InvalidScopeError
 from src.models.client import Client
 from src.repositories.client_repo import ClientRepository, get_client_repository
+from src.services.token_service import TokenService
 
 
 class OAuthService:
@@ -19,9 +23,7 @@ class OAuthService:
         self.client_repo = client_repo
         self.redis_pool = redis_pool
 
-    async def get_and_validate_client(
-        self, client_id: str, redirect_uri: str
-    ) -> Client:
+    async def get_and_validate_client(self, client_id: str, redirect_uri: str) -> Client:
         """Validate the client ID and redirect URI."""
         try:
             client_uuid = uuid.UUID(client_id)
@@ -54,6 +56,44 @@ class OAuthService:
 
         return client
 
+    async def authenticate_client(self, client_id: str, client_secret: str | None = None) -> Client:
+        """Authenticate a client based on its client_id and optional client_secret."""
+        try:
+            client_uuid = uuid.UUID(client_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid client ID format",
+            )
+
+        client = await self.client_repo.get_by_id(client_uuid)
+        if not client:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Client not found",
+            )
+
+        if client.client_type == "confidential":
+            if not client_secret:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Client secret is required for confidential clients",
+                )
+            active_secrets = await self.client_repo.get_active_secrets(client.id)
+            from src.core.security import verify_password
+
+            is_valid = False
+            for secret in active_secrets:
+                if verify_password(client_secret, secret.secret_hash):
+                    is_valid = True
+                    break
+            if not is_valid:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid client credentials",
+                )
+        return client
+
     def validate_scope(self, requested_scope: str, client: Client) -> None:
         """Validate the requested scope against the client's allowed scopes."""
         if not requested_scope:
@@ -61,9 +101,7 @@ class OAuthService:
         allowed_scopes = set(client.scope.split())
         requested_scopes = set(requested_scope.split())
         if not requested_scopes.issubset(allowed_scopes):
-            raise InvalidScopeException(
-                "Requested scope is not allowed for this client."
-            )
+            raise InvalidScopeError("Requested scope is not allowed for this client.")
 
     async def create_authorization_code(
         self,
@@ -101,6 +139,90 @@ class OAuthService:
             return json.loads(data)
         return None
 
+    async def process_authorization_request(
+        self,
+        user_id: str | None,
+        response_type: str,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        state: str,
+        code_challenge: str,
+        code_challenge_method: str,
+    ) -> RedirectResponse:
+        """Process authorize request: validate client, scope, and check user authentication."""
+        if response_type != "code":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="unsupported_response_type",
+            )
+
+        client = await self.get_and_validate_client(client_id, redirect_uri)
+
+        # Validate the requested scope
+        try:
+            self.validate_scope(scope, client)
+        except InvalidScopeError as e:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=str(e),
+            )
+
+        # 2. Check if user is authenticated via cookie
+        if not user_id:
+            # Redirect user to the login page, passing all OAuth parameters
+            params = {
+                "response_type": response_type,
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "scope": scope,
+                "state": state,
+                "code_challenge": code_challenge,
+                "code_challenge_method": code_challenge_method,
+            }
+            query_string = urllib.parse.urlencode(params)
+            return RedirectResponse(
+                url=f"/users/login?{query_string}",
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+
+        # 3. Create authorization code
+        code = await self.create_authorization_code(
+            client_id=client_id,
+            user_id=user_id,
+            redirect_uri=redirect_uri,
+            scope=scope,
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+        )
+
+        # 4. Redirect user back to the client redirect_uri with code and state
+        redirect_params = {
+            "code": code,
+            "state": state,
+        }
+        parsed_url = urllib.parse.urlparse(redirect_uri)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        for k, v in redirect_params.items():
+            query_params[k] = [v]
+
+        new_query = urllib.parse.urlencode(query_params, doseq=True)
+        redirect_url = urllib.parse.urlunparse(
+            (
+                parsed_url.scheme,
+                parsed_url.netloc,
+                parsed_url.path,
+                parsed_url.params,
+                new_query,
+                parsed_url.fragment,
+            )
+        )
+
+        return RedirectResponse(
+            url=redirect_url,
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
     def verify_pkce(
         self,
         code_verifier: str,
@@ -108,17 +230,271 @@ class OAuthService:
         code_challenge_method: str,
     ) -> bool:
         """Verify the code verifier against the code challenge."""
-        if code_challenge_method == "plain":
+        method = code_challenge_method.upper()
+        if method == "PLAIN":
             if not settings.enable_plain_pkce:
                 return False
             return secrets.compare_digest(code_verifier, code_challenge)
-        elif code_challenge_method == "S256":
+        elif method in ("S256", "SHA-256"):
             sha256_hash = hashlib.sha256(code_verifier.encode("utf-8")).digest()
-            calculated_challenge = (
-                base64.urlsafe_b64encode(sha256_hash).decode("utf-8").replace("=", "")
-            )
+            calculated_challenge = base64.urlsafe_b64encode(sha256_hash).decode("utf-8").replace("=", "")
             return secrets.compare_digest(calculated_challenge, code_challenge)
         return False
+
+    def _extract_client_credentials(
+        self,
+        auth_header: str | None,
+        client_id: str | None,
+        client_secret: str | None,
+    ) -> tuple[str, str | None]:
+        """Extract client ID and secret from Basic Auth header or parameters."""
+        if auth_header and auth_header.startswith("Basic "):
+            try:
+                encoded_credentials = auth_header.split(" ", 1)[1]
+                decoded_str = base64.b64decode(encoded_credentials).decode("utf-8")
+                if ":" in decoded_str:
+                    header_client_id, header_client_secret = decoded_str.split(":", 1)
+                    if client_id and client_id != header_client_id:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="invalid_client",
+                        )
+                    return header_client_id, header_client_secret
+            except HTTPException:
+                raise
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="invalid_client",
+                )
+
+        if not client_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_client",
+            )
+        return client_id, client_secret
+
+    async def _process_authorization_code_grant(
+        self,
+        client: Client,
+        token_service: TokenService,
+        code: str | None,
+        redirect_uri: str | None,
+        code_verifier: str | None,
+    ) -> dict:
+        """Process authorization code grant type."""
+        if not code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_request",
+            )
+
+        payload = await self.consume_authorization_code(code)
+        if (
+            not payload
+            or payload["client_id"] != str(client.id)
+            or payload.get("redirect_uri") != redirect_uri
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_grant",
+            )
+
+        code_challenge = payload.get("code_challenge")
+        if code_challenge:
+            if not code_verifier:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="invalid_grant",
+                )
+            code_challenge_method = payload.get("code_challenge_method", "S256")
+            if not self.verify_pkce(code_verifier, code_challenge, code_challenge_method):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="invalid_grant",
+                )
+
+        user_id = payload.get("user_id")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_grant",
+            )
+        try:
+            user_uuid = uuid.UUID(user_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_grant",
+            )
+        scope_str = payload.get("scope", "")
+
+        access_token, expires_in = await token_service.generate_access_token(
+            client_id=str(client.id),
+            user_id=user_id,
+            scope=scope_str,
+        )
+
+        refresh_token_str = await token_service.generate_refresh_token(
+            client_id=client.id,
+            user_id=user_uuid,
+        )
+
+        return {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": expires_in,
+            "refresh_token": refresh_token_str,
+            "scope": scope_str,
+        }
+
+    async def _process_client_credentials_grant(
+        self,
+        client: Client,
+        token_service,
+        scope: str | None,
+    ) -> dict:
+        """Process client credentials grant type."""
+        requested_scope = scope or client.scope
+        try:
+            self.validate_scope(requested_scope, client)
+        except InvalidScopeError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_scope",
+            )
+
+        access_token, expires_in = await token_service.generate_access_token(
+            client_id=str(client.id),
+            user_id=None,
+            scope=requested_scope,
+        )
+
+        return {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": expires_in,
+            "scope": requested_scope,
+        }
+
+    async def _process_refresh_token_grant(
+        self,
+        client: Client,
+        token_service,
+        refresh_token: str | None,
+        scope: str | None,
+    ) -> dict:
+        """Process refresh token grant type."""
+        if not refresh_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_request",
+            )
+
+        token_record = await token_service.token_repo.get_by_token(refresh_token)
+        if not token_record or token_record.client_id != client.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_grant",
+            )
+
+        now = datetime.now(timezone.utc)
+        expires_at = token_record.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+
+        if expires_at < now:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_grant",
+            )
+
+        if token_record.is_revoked:
+            await token_service.token_repo.revoke_family(token_record.parent_family_id)
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_grant",
+            )
+
+        await token_service.token_repo.revoke_token(token_record.id)
+
+        granted_scope = scope or client.scope
+        if scope:
+            try:
+                self.validate_scope(scope, client)
+            except InvalidScopeError:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="invalid_scope",
+                )
+
+        access_token, expires_in = await token_service.generate_access_token(
+            client_id=str(client.id),
+            user_id=str(token_record.user_id),
+            scope=granted_scope,
+        )
+
+        new_refresh_token = await token_service.generate_refresh_token(
+            client_id=client.id,
+            user_id=token_record.user_id,
+            parent_family_id=token_record.parent_family_id,
+        )
+
+        return {
+            "access_token": access_token,
+            "token_type": "Bearer",
+            "expires_in": expires_in,
+            "refresh_token": new_refresh_token,
+            "scope": granted_scope,
+        }
+
+    async def exchange_token(
+        self,
+        grant_type: str,
+        token_service,
+        auth_header: str | None = None,
+        code: str | None = None,
+        redirect_uri: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        code_verifier: str | None = None,
+        refresh_token: str | None = None,
+        scope: str | None = None,
+    ) -> dict:
+        """Exchange code or client credentials for tokens."""
+        client_id, client_secret = self._extract_client_credentials(auth_header, client_id, client_secret)
+
+        try:
+            client = await self.authenticate_client(client_id, client_secret)
+        except HTTPException as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail="invalid_client",
+            )
+
+        # Check if the requested grant type is supported by the client
+        allowed_grants = client.grant_types.split(",") if client.grant_types else []
+        if grant_type not in allowed_grants:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="unsupported_grant_type",
+            )
+
+        # 2. Process Grant Types
+        if grant_type == "authorization_code":
+            return await self._process_authorization_code_grant(
+                client, token_service, code, redirect_uri, code_verifier
+            )
+        elif grant_type == "client_credentials":
+            return await self._process_client_credentials_grant(client, token_service, scope)
+        elif grant_type == "refresh_token":
+            return await self._process_refresh_token_grant(client, token_service, refresh_token, scope)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="unsupported_grant_type",
+            )
 
 
 async def get_oauth_service(

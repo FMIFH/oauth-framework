@@ -1,12 +1,9 @@
-import urllib.parse
-
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, Form, Query, Request
 
 from src.core.database import get_db
-from src.exceptions.invalid_scope_exception import InvalidScopeException
 from src.services.key_manager import jwks
 from src.services.oauth_service import OAuthService, get_oauth_service
+from src.services.token_service import TokenService, get_token_service
 
 router = APIRouter(prefix="/oauth", tags=["oauth"])
 
@@ -23,79 +20,46 @@ async def authorize(
     code_challenge_method: str = Query(...),
     oauth_service: OAuthService = Depends(get_oauth_service),
 ):
-
-    # 1. User is authenticated, validate OAuth client & redirect URI
-    client = await oauth_service.get_and_validate_client(client_id, redirect_uri)
-
-    # Validate the requested scope
-    try:
-        oauth_service.validate_scope(scope, client)
-    except InvalidScopeException as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
-
-    # 2. Check if user is authenticated via cookie
     user_id = request.cookies.get("user_session")
-    if not user_id:
-        # Redirect user to the login page, passing all OAuth parameters
-        params = {
-            "response_type": response_type,
-            "client_id": client_id,
-            "redirect_uri": redirect_uri,
-            "scope": scope,
-            "state": state,
-            "code_challenge": code_challenge,
-            "code_challenge_method": code_challenge_method,
-        }
-        query_string = urllib.parse.urlencode(params)
-        return RedirectResponse(
-            url=f"/users/login?{query_string}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
-    # 3. Create authorization code
-    code = await oauth_service.create_authorization_code(
-        client_id=client_id,
+    return await oauth_service.process_authorization_request(
         user_id=user_id,
+        response_type=response_type,
+        client_id=client_id,
         redirect_uri=redirect_uri,
         scope=scope,
+        state=state,
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
     )
 
-    # 4. Redirect user back to the client redirect_uri with code and state
-    redirect_params = {
-        "code": code,
-        "state": state,
-    }
-    parsed_url = urllib.parse.urlparse(redirect_uri)
-    query_params = urllib.parse.parse_qs(parsed_url.query)
-    for k, v in redirect_params.items():
-        query_params[k] = [v]
-
-    new_query = urllib.parse.urlencode(query_params, doseq=True)
-    redirect_url = urllib.parse.urlunparse(
-        (
-            parsed_url.scheme,
-            parsed_url.netloc,
-            parsed_url.path,
-            parsed_url.params,
-            new_query,
-            parsed_url.fragment,
-        )
-    )
-
-    return RedirectResponse(
-        url=redirect_url,
-        status_code=status.HTTP_303_SEE_OTHER,
-    )
-
 
 @router.post("/token")
-def token():
-    return {"message": "Token endpoint"}
+async def token(
+    request: Request,
+    grant_type: str = Form(...),
+    code: str | None = Form(None),
+    redirect_uri: str | None = Form(None),
+    client_id: str | None = Form(None),
+    client_secret: str | None = Form(None),
+    code_verifier: str | None = Form(None),
+    refresh_token: str | None = Form(None),
+    scope: str | None = Form(None),
+    oauth_service: OAuthService = Depends(get_oauth_service),
+    token_service: TokenService = Depends(get_token_service),
+):
+    auth_header = request.headers.get("Authorization")
+    return await oauth_service.exchange_token(
+        grant_type=grant_type,
+        token_service=token_service,
+        auth_header=auth_header,
+        code=code,
+        redirect_uri=redirect_uri,
+        client_id=client_id,
+        client_secret=client_secret,
+        code_verifier=code_verifier,
+        refresh_token=refresh_token,
+        scope=scope,
+    )
 
 
 @router.get("/jwks")

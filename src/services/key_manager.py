@@ -102,19 +102,14 @@ async def jwks(session: AsyncSession) -> dict:
     jwk_keys = []
     for key in active_keys:
         # Load the public key directly from the database without decrypting the private key
-        public_key = serialization.load_pem_public_key(
-            key.public_key_pem.encode("utf-8")
-        )
+        public_key = serialization.load_pem_public_key(key.public_key_pem.encode("utf-8"))
 
         if key.algorithm == "RS256" and isinstance(public_key, rsa.RSAPublicKey):
             rsa_public_numbers = public_key.public_numbers()
-            # RSA exponents and modulus should be converted to minimum length byte representations (Base64urlUInt)
-            e_bytes = rsa_public_numbers.e.to_bytes(
-                (rsa_public_numbers.e.bit_length() + 7) // 8 or 1, "big"
-            )
-            n_bytes = rsa_public_numbers.n.to_bytes(
-                (rsa_public_numbers.n.bit_length() + 7) // 8 or 1, "big"
-            )
+            # RSA exponents and modulus should be converted to minimum length byte representations
+            # (Base64urlUInt)
+            e_bytes = rsa_public_numbers.e.to_bytes((rsa_public_numbers.e.bit_length() + 7) // 8 or 1, "big")
+            n_bytes = rsa_public_numbers.n.to_bytes((rsa_public_numbers.n.bit_length() + 7) // 8 or 1, "big")
             jwk_keys.append(
                 {
                     "kty": "RSA",
@@ -125,11 +120,10 @@ async def jwks(session: AsyncSession) -> dict:
                     "e": base64.urlsafe_b64encode(e_bytes).decode("utf-8").rstrip("="),
                 }
             )
-        elif key.algorithm == "ES256" and isinstance(
-            public_key, ec.EllipticCurvePublicKey
-        ):
+        elif key.algorithm == "ES256" and isinstance(public_key, ec.EllipticCurvePublicKey):
             ec_public_numbers = public_key.public_numbers()
-            # For P-256 curve (ES256), the coordinate byte length must be exactly 32 bytes (padded with leading zeros if necessary)
+            # For P-256 curve (ES256), the coordinate byte length must be exactly 32 bytes
+            # (padded with leading zeros if necessary)
             x_bytes = ec_public_numbers.x.to_bytes(32, "big")
             y_bytes = ec_public_numbers.y.to_bytes(32, "big")
             jwk_keys.append(
