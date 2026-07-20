@@ -9,7 +9,7 @@ from src.core.redis import close_redis, get_redis_pool
 from src.core.redis import health_check as redis_health_check
 from src.routers.oauth import router as oauth_router
 from src.routers.user import router as user_router
-from src.routers.well_knonw import router as well_known_router
+from src.routers.well_known import router as well_known_router
 from src.schemas.health_schema import HealthCheckResponse
 
 
