@@ -6,6 +6,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import RedirectResponse
 from fastapi.testclient import TestClient
 
+from src.core.security import sign_cookie_value
 from src.main_as import app
 from src.services.oauth_service import OAuthService, get_oauth_service
 from src.services.token_service import TokenService, get_token_service
@@ -89,7 +90,7 @@ async def test_authorize_success_when_authenticated(client, mock_oauth_service):
     )
 
     # Set the authenticated session cookie
-    client.cookies.set("user_session", "test-user-id")
+    client.cookies.set("user_session", sign_cookie_value("test-user-id"))
 
     # Act
     response = client.get("/oauth/authorize", params=params, follow_redirects=False)
@@ -132,7 +133,7 @@ async def test_authorize_invalid_scope(client, mock_oauth_service):
     )
 
     # Set the authenticated session cookie
-    client.cookies.set("user_session", "test-user-id")
+    client.cookies.set("user_session", sign_cookie_value("test-user-id"))
 
     # Act
     response = client.get("/oauth/authorize", params=params, follow_redirects=False)

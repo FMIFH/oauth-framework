@@ -4,7 +4,8 @@ import urllib.parse
 from fastapi import APIRouter, Depends, Form, HTTPException, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from src.core.security import hash_password, verify_password
+from src.config import settings
+from src.core.security import hash_password, sign_cookie_value, verify_password
 from src.repositories.user_repo import UserRepository, get_user_repository
 from src.schemas.user_schemas import UserRegisterRequest, UserRegisterResponse
 
@@ -156,10 +157,11 @@ async def login(
     # Successful login: Set user session cookie
     response.set_cookie(
         key="user_session",
-        value=str(user.id),
+        value=sign_cookie_value(str(user.id)),
         httponly=True,
         max_age=3600,  # 1 hour
-        samesite="lax",
+        samesite=settings.cookie_samesite.lower() if settings.cookie_samesite else "lax",  # type: ignore
+        secure=settings.cookie_secure,
     )
 
     # If part of OAuth authorize flow, redirect back to authorize
@@ -181,10 +183,11 @@ async def login(
         )
         redirect_response.set_cookie(
             key="user_session",
-            value=str(user.id),
+            value=sign_cookie_value(str(user.id)),
             httponly=True,
             max_age=3600,  # 1 hour
-            samesite="lax",
+            samesite=settings.cookie_samesite.lower() if settings.cookie_samesite else "lax",  # type: ignore
+            secure=settings.cookie_secure,
         )
         return redirect_response
 
