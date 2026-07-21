@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, Form, Query, Request
 
 from src.core.database import get_db
+from src.core.security import verify_cookie_value
 from src.services.key_manager import jwks
 from src.services.oauth_service import OAuthService, get_oauth_service
 from src.services.token_service import TokenService, get_token_service
@@ -20,7 +21,8 @@ async def authorize(
     code_challenge_method: str = Query(...),
     oauth_service: OAuthService = Depends(get_oauth_service),
 ):
-    user_id = request.cookies.get("user_session")
+    cookie_val = request.cookies.get("user_session")
+    user_id = verify_cookie_value(cookie_val) if cookie_val else None
     return await oauth_service.process_authorization_request(
         user_id=user_id,
         response_type=response_type,
