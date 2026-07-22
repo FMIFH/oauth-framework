@@ -392,3 +392,87 @@ async def test_token_unsupported_grant(client, mock_oauth_service):
     # Assert
     assert response.status_code == status.HTTP_400_BAD_REQUEST
     assert response.json()["detail"] == "unsupported_grant_type"
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_form_auth_success(client, mock_oauth_service):
+    # Arrange
+    mock_oauth_service.revoke_token = AsyncMock(return_value={})
+
+    form_data = {
+        "token": "ref_valid_token",
+        "client_id": "test-client-id",
+        "client_secret": "test-client-secret",
+        "token_type_hint": "refresh_token",
+    }
+
+    # Act
+    response = client.post("/oauth/revoke", data=form_data)
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {}
+
+    mock_oauth_service.revoke_token.assert_called_once()
+    kwargs = mock_oauth_service.revoke_token.call_args[1]
+    assert kwargs["token"] == "ref_valid_token"
+    assert kwargs["token_type_hint"] == "refresh_token"
+    assert kwargs["auth_header"] is None
+    assert kwargs["client_id"] == "test-client-id"
+    assert kwargs["client_secret"] == "test-client-secret"
+    assert kwargs["token_service"] is not None
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_basic_auth_success(client, mock_oauth_service):
+    import base64
+
+    # Arrange
+    mock_oauth_service.revoke_token = AsyncMock(return_value={})
+
+    form_data = {
+        "token": "ref_valid_token",
+        "token_type_hint": "refresh_token",
+    }
+
+    auth_str = "test-client-id:test-client-secret"
+    b64_auth = base64.b64encode(auth_str.encode()).decode()
+    headers = {"Authorization": f"Basic {b64_auth}"}
+
+    # Act
+    response = client.post("/oauth/revoke", data=form_data, headers=headers)
+
+    # Assert
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json() == {}
+
+    mock_oauth_service.revoke_token.assert_called_once()
+    kwargs = mock_oauth_service.revoke_token.call_args[1]
+    assert kwargs["token"] == "ref_valid_token"
+    assert kwargs["token_type_hint"] == "refresh_token"
+    assert kwargs["auth_header"] == f"Basic {b64_auth}"
+    assert kwargs["client_id"] is None
+    assert kwargs["client_secret"] is None
+    assert kwargs["token_service"] is not None
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_invalid_client_error(client, mock_oauth_service):
+    # Arrange
+    mock_oauth_service.revoke_token = AsyncMock(
+        side_effect=HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid_client")
+    )
+
+    form_data = {
+        "token": "ref_valid_token",
+        "client_id": "test-client-id",
+        "client_secret": "wrong-secret",
+    }
+
+    # Act
+    response = client.post("/oauth/revoke", data=form_data)
+
+    # Assert
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert response.json()["detail"] == "invalid_client"
+

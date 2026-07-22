@@ -6,6 +6,7 @@ import urllib.parse
 import uuid
 from datetime import datetime, timezone
 
+import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from redis.asyncio import Redis
@@ -495,6 +496,86 @@ class OAuthService:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="unsupported_grant_type",
             )
+
+    def _decode_and_validate_jwt(self, token: str, client_id_str: str) -> dict | None:
+        """Decode a token without verification and validate it belongs to the client."""
+        try:
+            payload = jwt.decode(token, options={"verify_signature": False})
+            token_client_id = payload.get("client_id") or payload.get("aud")
+            if token_client_id == client_id_str:
+                return payload
+        except Exception:
+            pass
+        return None
+
+    async def _blacklist_jwt(self, payload: dict) -> None:
+        """Add JWT's jti to the Redis blacklist with TTL matching remaining lifespan."""
+        jti = payload.get("jti")
+        exp = payload.get("exp")
+        if not jti or not exp:
+            return
+        now = int(datetime.now(timezone.utc).timestamp())
+        ttl = int(exp) - now
+        if ttl > 0:
+            await self.redis_pool.setex(f"token:blacklist:{jti}", ttl, "true")
+
+    async def revoke_token(
+        self,
+        token: str,
+        token_service: TokenService,
+        token_type_hint: str | None = None,
+        auth_header: str | None = None,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+    ) -> dict:
+        """Revoke a token (access or refresh) based on the provided token string."""
+        if not token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="invalid_request",
+            )
+
+        # Extract client credentials from header or body
+        client_id, client_secret = self._extract_client_credentials(auth_header, client_id, client_secret)
+
+        # Authenticate the client
+        try:
+            client = await self.authenticate_client(client_id, client_secret)
+        except HTTPException as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail="invalid_client",
+            )
+
+        client_id_str = str(client.id)
+
+        # 1. Access Token Revocation
+        if token_type_hint == "access_token":
+            payload = self._decode_and_validate_jwt(token, client_id_str)
+            if payload:
+                await self._blacklist_jwt(payload)
+            return {}
+
+        # 2. Refresh Token Revocation
+        if token_type_hint == "refresh_token":
+            token_record = await token_service.token_repo.get_by_token(token)
+            if token_record and token_record.client_id == client.id:
+                await token_service.token_repo.revoke_family(token_record.parent_family_id)
+            return {}
+
+        # 3. Dynamic Revocation (Hint is None or other)
+        payload = self._decode_and_validate_jwt(token, client_id_str)
+        if payload:
+            await self._blacklist_jwt(payload)
+            return {}
+
+        # Fallback to refresh token
+        token_record = await token_service.token_repo.get_by_token(token)
+        if token_record and token_record.client_id == client.id:
+            await token_service.token_repo.revoke_family(token_record.parent_family_id)
+
+        # RFC 7009: Return empty dictionary to signal success without disclosing existence
+        return {}
 
 
 async def get_oauth_service(

@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -387,3 +388,372 @@ async def test_process_authorization_request_redirect_to_login():
     # Assert
     assert response.status_code == 303
     assert "/users/login" in response.headers["location"]
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_no_token():
+    # Arrange
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+    mock_token_service = AsyncMock()
+
+    # Act & Assert
+    with pytest.raises(HTTPException) as exc_info:
+        await service.revoke_token(
+            token="",
+            token_service=mock_token_service,
+        )
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid_request"
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_client_auth_failure():
+    # Arrange
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+    mock_token_service = AsyncMock()
+
+    client_id = uuid.uuid4()
+    # Mock authenticate_client to raise invalid_client HTTPException
+    service.authenticate_client = AsyncMock(
+        side_effect=HTTPException(status_code=401, detail="Invalid client credentials")
+    )
+
+    # Act & Assert
+    with pytest.raises(HTTPException) as exc_info:
+        await service.revoke_token(
+            token="ref_some_token",
+            token_service=mock_token_service,
+            client_id=str(client_id),
+            client_secret="wrong_secret",
+        )
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "invalid_client"
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_success_refresh_token_hint():
+    # Arrange
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    # Mock token record and repo
+    token_record = MagicMock()
+    token_record.id = uuid.uuid4()
+    token_record.client_id = client_id
+    token_record.parent_family_id = uuid.uuid4()
+
+    mock_token_repo = AsyncMock()
+    mock_token_repo.get_by_token.return_value = token_record
+
+    mock_token_service = AsyncMock()
+    mock_token_service.token_repo = mock_token_repo
+
+    # Act
+    result = await service.revoke_token(
+        token="ref_valid_token",
+        token_service=mock_token_service,
+        token_type_hint="refresh_token",
+        client_id=str(client_id),
+    )
+
+    # Assert
+    assert result == {}
+    mock_token_repo.get_by_token.assert_called_once_with("ref_valid_token")
+    mock_token_repo.revoke_family.assert_called_once_with(token_record.parent_family_id)
+    mock_token_repo.revoke_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_success_no_hint():
+    # Arrange
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    # Mock token record and repo
+    token_record = MagicMock()
+    token_record.id = uuid.uuid4()
+    token_record.client_id = client_id
+    token_record.parent_family_id = uuid.uuid4()
+
+    mock_token_repo = AsyncMock()
+    mock_token_repo.get_by_token.return_value = token_record
+
+    mock_token_service = AsyncMock()
+    mock_token_service.token_repo = mock_token_repo
+
+    # Act
+    result = await service.revoke_token(
+        token="ref_valid_token",
+        token_service=mock_token_service,
+        client_id=str(client_id),
+    )
+
+    # Assert
+    assert result == {}
+    mock_token_repo.get_by_token.assert_called_once_with("ref_valid_token")
+    mock_token_repo.revoke_family.assert_called_once_with(token_record.parent_family_id)
+    mock_token_repo.revoke_token.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_not_found_graceful():
+    # Arrange
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    mock_token_repo = AsyncMock()
+    mock_token_repo.get_by_token.return_value = None
+
+    mock_token_service = AsyncMock()
+    mock_token_service.token_repo = mock_token_repo
+
+    # Act
+    result = await service.revoke_token(
+        token="ref_nonexistent_token",
+        token_service=mock_token_service,
+        client_id=str(client_id),
+    )
+
+    # Assert
+    assert result == {}
+    mock_token_repo.get_by_token.assert_called_once_with("ref_nonexistent_token")
+    mock_token_repo.revoke_token.assert_not_called()
+    mock_token_repo.revoke_family.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_different_client_graceful():
+    # Arrange
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    # Token belongs to another client
+    token_record = MagicMock()
+    token_record.id = uuid.uuid4()
+    token_record.client_id = uuid.uuid4()  # different client ID
+
+    mock_token_repo = AsyncMock()
+    mock_token_repo.get_by_token.return_value = token_record
+
+    mock_token_service = AsyncMock()
+    mock_token_service.token_repo = mock_token_repo
+
+    # Act
+    result = await service.revoke_token(
+        token="ref_other_client_token",
+        token_service=mock_token_service,
+        client_id=str(client_id),
+    )
+
+    # Assert
+    assert result == {}
+    mock_token_repo.get_by_token.assert_called_once_with("ref_other_client_token")
+    mock_token_repo.revoke_token.assert_not_called()
+    mock_token_repo.revoke_family.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_access_token_hint_success():
+    # Arrange
+    import jwt
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    # Generate a fake JWT access token matching the client ID
+    future_time = int(datetime.now(timezone.utc).timestamp()) + 100
+    access_token_payload = {
+        "jti": "jti_12345",
+        "exp": future_time,
+        "client_id": str(client_id),
+    }
+    # Encode with some dummy key since we decode with verify_signature=False
+    access_token = jwt.encode(access_token_payload, "secret", algorithm="HS256")
+
+    mock_token_service = AsyncMock()
+
+    # Act
+    result = await service.revoke_token(
+        token=access_token,
+        token_service=mock_token_service,
+        token_type_hint="access_token",
+        client_id=str(client_id),
+    )
+
+    # Assert
+    assert result == {}
+    mock_redis.setex.assert_called_once()
+    key, ttl, value = mock_redis.setex.call_args[0]
+    assert key == "token:blacklist:jti_12345"
+    assert ttl > 0
+    assert value == "true"
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_access_token_no_hint_success():
+    # Arrange
+    import jwt
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    # Generate a fake JWT access token matching the client ID
+    future_time = int(datetime.now(timezone.utc).timestamp()) + 100
+    access_token_payload = {
+        "jti": "jti_abcde",
+        "exp": future_time,
+        "client_id": str(client_id),
+    }
+    access_token = jwt.encode(access_token_payload, "secret", algorithm="HS256")
+
+    mock_token_service = AsyncMock()
+
+    # Act
+    result = await service.revoke_token(
+        token=access_token,
+        token_service=mock_token_service,
+        client_id=str(client_id),
+    )
+
+    # Assert
+    assert result == {}
+    mock_redis.setex.assert_called_once()
+    key, ttl, value = mock_redis.setex.call_args[0]
+    assert key == "token:blacklist:jti_abcde"
+    assert ttl > 0
+    assert value == "true"
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_access_token_expired_no_blacklist():
+    # Arrange
+    import jwt
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    # Generate a fake expired JWT
+    past_time = int(datetime.now(timezone.utc).timestamp()) - 100
+    access_token_payload = {
+        "jti": "jti_expired",
+        "exp": past_time,
+        "client_id": str(client_id),
+    }
+    access_token = jwt.encode(access_token_payload, "secret", algorithm="HS256")
+
+    mock_token_service = AsyncMock()
+
+    # Act
+    result = await service.revoke_token(
+        token=access_token,
+        token_service=mock_token_service,
+        client_id=str(client_id),
+    )
+
+    # Assert
+    assert result == {}
+    mock_redis.setex.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_revoke_token_access_token_wrong_client_no_blacklist():
+    # Arrange
+    import jwt
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    # Generate a fake JWT belonging to another client
+    future_time = int(datetime.now(timezone.utc).timestamp()) + 100
+    access_token_payload = {
+        "jti": "jti_wrong_client",
+        "exp": future_time,
+        "client_id": str(uuid.uuid4()),  # different client ID
+    }
+    access_token = jwt.encode(access_token_payload, "secret", algorithm="HS256")
+
+    mock_token_service = AsyncMock()
+
+    # Act
+    result = await service.revoke_token(
+        token=access_token,
+        token_service=mock_token_service,
+        client_id=str(client_id),
+    )
+
+    # Assert
+    assert result == {}
+    mock_redis.setex.assert_not_called()
+
