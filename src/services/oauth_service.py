@@ -16,6 +16,7 @@ from src.core.redis import get_redis
 from src.exceptions.invalid_scope_exception import InvalidScopeError
 from src.models.client import Client
 from src.repositories.client_repo import ClientRepository, get_client_repository
+from src.services.key_service import KeyService
 from src.services.token_service import TokenService
 
 
@@ -393,7 +394,7 @@ class OAuthService:
                 detail="invalid_request",
             )
 
-        token_record = await token_service.token_repo.get_by_token(refresh_token)
+        token_record = await token_service.get_refresh_token(refresh_token)
         if not token_record or token_record.client_id != client.id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -412,13 +413,13 @@ class OAuthService:
             )
 
         if token_record.is_revoked:
-            await token_service.token_repo.revoke_family(token_record.parent_family_id)
+            await token_service.revoke_refresh_token_family(token_record.parent_family_id)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="invalid_grant",
             )
 
-        await token_service.token_repo.revoke_token(token_record.id)
+        await token_service.revoke_refresh_token(token_record.id)
 
         granted_scope = scope or client.scope
         if scope:
@@ -497,14 +498,38 @@ class OAuthService:
                 detail="unsupported_grant_type",
             )
 
-    def _decode_and_validate_jwt(self, token: str, client_id_str: str) -> dict | None:
-        """Decode a token without verification and validate it belongs to the client."""
+    async def _decode_and_validate_jwt(
+        self, token: str, client_id_str: str, key_service: KeyService | None = None
+    ) -> dict | None:
+        """Decode a JWT, verify its signature with the corresponding public key,
+        and validate it belongs to the client."""
+        if not key_service:
+            return None
         try:
-            payload = jwt.decode(token, options={"verify_signature": False})
-            token_client_id = payload.get("client_id") or payload.get("aud")
-            if token_client_id == client_id_str:
-                return payload
+            # 1. Parse unverified header to extract the key ID (kid)
+            unverified_header = jwt.get_unverified_header(token)
+            kid = unverified_header.get("kid")
+            if not kid:
+                return None
+
+            signing_key = await key_service.get_signing_key_by_kid(kid)
+            if not signing_key:
+                return None
+
+            # 2. Verify the signature, audience, and expiration
+            # PyJWT automatically validates audience, expiration, and signature.
+            payload = jwt.decode(
+                token,
+                key=signing_key.public_key_pem,
+                algorithms=[signing_key.algorithm],
+                audience=client_id_str,
+            )
+            return payload
+        except jwt.ExpiredSignatureError:
+            # Token is already expired, so we don't need to blacklist it.
+            pass
         except Exception:
+            # Any other verification failure (e.g., invalid signature, malformed token)
             pass
         return None
 
@@ -523,6 +548,7 @@ class OAuthService:
         self,
         token: str,
         token_service: TokenService,
+        key_service: KeyService | None = None,
         token_type_hint: str | None = None,
         auth_header: str | None = None,
         client_id: str | None = None,
@@ -533,6 +559,12 @@ class OAuthService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="invalid_request",
+            )
+
+        if token_type_hint not in (None, "access_token", "refresh_token"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="unsupported_token_type",
             )
 
         # Extract client credentials from header or body
@@ -551,28 +583,28 @@ class OAuthService:
 
         # 1. Access Token Revocation
         if token_type_hint == "access_token":
-            payload = self._decode_and_validate_jwt(token, client_id_str)
+            payload = await self._decode_and_validate_jwt(token, client_id_str, key_service)
             if payload:
                 await self._blacklist_jwt(payload)
             return {}
 
         # 2. Refresh Token Revocation
         if token_type_hint == "refresh_token":
-            token_record = await token_service.token_repo.get_by_token(token)
+            token_record = await token_service.get_refresh_token(token)
             if token_record and token_record.client_id == client.id:
-                await token_service.token_repo.revoke_family(token_record.parent_family_id)
+                await token_service.revoke_refresh_token_family(token_record.parent_family_id)
             return {}
 
-        # 3. Dynamic Revocation (Hint is None or other)
-        payload = self._decode_and_validate_jwt(token, client_id_str)
+        # 3. Dynamic Revocation (Hint is None)
+        payload = await self._decode_and_validate_jwt(token, client_id_str, key_service)
         if payload:
             await self._blacklist_jwt(payload)
             return {}
 
         # Fallback to refresh token
-        token_record = await token_service.token_repo.get_by_token(token)
+        token_record = await token_service.get_refresh_token(token)
         if token_record and token_record.client_id == client.id:
-            await token_service.token_repo.revoke_family(token_record.parent_family_id)
+            await token_service.revoke_refresh_token_family(token_record.parent_family_id)
 
         # RFC 7009: Return empty dictionary to signal success without disclosing existence
         return {}
