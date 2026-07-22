@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from src.core.security import sign_cookie_value
 from src.main_as import app
+from src.services.key_service import KeyService, get_key_service
 from src.services.oauth_service import OAuthService, get_oauth_service
 from src.services.token_service import TokenService, get_token_service
 
@@ -27,10 +28,17 @@ def mock_token_service():
 
 
 @pytest.fixture
-def client(mock_oauth_service, mock_token_service):
+def mock_key_service():
+    service = AsyncMock(spec=KeyService)
+    return service
+
+
+@pytest.fixture
+def client(mock_oauth_service, mock_token_service, mock_key_service):
     # Override dependencies
     app.dependency_overrides[get_oauth_service] = lambda: mock_oauth_service
     app.dependency_overrides[get_token_service] = lambda: mock_token_service
+    app.dependency_overrides[get_key_service] = lambda: mock_key_service
     with TestClient(app) as c:
         yield c
     # Clean up overrides
@@ -421,6 +429,7 @@ async def test_revoke_token_form_auth_success(client, mock_oauth_service):
     assert kwargs["client_id"] == "test-client-id"
     assert kwargs["client_secret"] == "test-client-secret"
     assert kwargs["token_service"] is not None
+    assert kwargs["key_service"] is not None
 
 
 @pytest.mark.asyncio
@@ -454,6 +463,7 @@ async def test_revoke_token_basic_auth_success(client, mock_oauth_service):
     assert kwargs["client_id"] is None
     assert kwargs["client_secret"] is None
     assert kwargs["token_service"] is not None
+    assert kwargs["key_service"] is not None
 
 
 @pytest.mark.asyncio
@@ -475,4 +485,3 @@ async def test_revoke_token_invalid_client_error(client, mock_oauth_service):
     # Assert
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
     assert response.json()["detail"] == "invalid_client"
-

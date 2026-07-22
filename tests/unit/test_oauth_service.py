@@ -449,17 +449,14 @@ async def test_revoke_token_success_refresh_token_hint():
     )
     service.authenticate_client = AsyncMock(return_value=mock_client)
 
-    # Mock token record and repo
+    # Mock token record and service methods
     token_record = MagicMock()
     token_record.id = uuid.uuid4()
     token_record.client_id = client_id
     token_record.parent_family_id = uuid.uuid4()
 
-    mock_token_repo = AsyncMock()
-    mock_token_repo.get_by_token.return_value = token_record
-
     mock_token_service = AsyncMock()
-    mock_token_service.token_repo = mock_token_repo
+    mock_token_service.get_refresh_token.return_value = token_record
 
     # Act
     result = await service.revoke_token(
@@ -471,9 +468,9 @@ async def test_revoke_token_success_refresh_token_hint():
 
     # Assert
     assert result == {}
-    mock_token_repo.get_by_token.assert_called_once_with("ref_valid_token")
-    mock_token_repo.revoke_family.assert_called_once_with(token_record.parent_family_id)
-    mock_token_repo.revoke_token.assert_not_called()
+    mock_token_service.get_refresh_token.assert_called_once_with("ref_valid_token")
+    mock_token_service.revoke_refresh_token_family.assert_called_once_with(token_record.parent_family_id)
+    mock_token_service.revoke_refresh_token.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -491,17 +488,14 @@ async def test_revoke_token_success_no_hint():
     )
     service.authenticate_client = AsyncMock(return_value=mock_client)
 
-    # Mock token record and repo
+    # Mock token record and service methods
     token_record = MagicMock()
     token_record.id = uuid.uuid4()
     token_record.client_id = client_id
     token_record.parent_family_id = uuid.uuid4()
 
-    mock_token_repo = AsyncMock()
-    mock_token_repo.get_by_token.return_value = token_record
-
     mock_token_service = AsyncMock()
-    mock_token_service.token_repo = mock_token_repo
+    mock_token_service.get_refresh_token.return_value = token_record
 
     # Act
     result = await service.revoke_token(
@@ -512,9 +506,9 @@ async def test_revoke_token_success_no_hint():
 
     # Assert
     assert result == {}
-    mock_token_repo.get_by_token.assert_called_once_with("ref_valid_token")
-    mock_token_repo.revoke_family.assert_called_once_with(token_record.parent_family_id)
-    mock_token_repo.revoke_token.assert_not_called()
+    mock_token_service.get_refresh_token.assert_called_once_with("ref_valid_token")
+    mock_token_service.revoke_refresh_token_family.assert_called_once_with(token_record.parent_family_id)
+    mock_token_service.revoke_refresh_token.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -532,11 +526,8 @@ async def test_revoke_token_not_found_graceful():
     )
     service.authenticate_client = AsyncMock(return_value=mock_client)
 
-    mock_token_repo = AsyncMock()
-    mock_token_repo.get_by_token.return_value = None
-
     mock_token_service = AsyncMock()
-    mock_token_service.token_repo = mock_token_repo
+    mock_token_service.get_refresh_token.return_value = None
 
     # Act
     result = await service.revoke_token(
@@ -547,9 +538,9 @@ async def test_revoke_token_not_found_graceful():
 
     # Assert
     assert result == {}
-    mock_token_repo.get_by_token.assert_called_once_with("ref_nonexistent_token")
-    mock_token_repo.revoke_token.assert_not_called()
-    mock_token_repo.revoke_family.assert_not_called()
+    mock_token_service.get_refresh_token.assert_called_once_with("ref_nonexistent_token")
+    mock_token_service.revoke_refresh_token.assert_not_called()
+    mock_token_service.revoke_refresh_token_family.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -572,11 +563,8 @@ async def test_revoke_token_different_client_graceful():
     token_record.id = uuid.uuid4()
     token_record.client_id = uuid.uuid4()  # different client ID
 
-    mock_token_repo = AsyncMock()
-    mock_token_repo.get_by_token.return_value = token_record
-
     mock_token_service = AsyncMock()
-    mock_token_service.token_repo = mock_token_repo
+    mock_token_service.get_refresh_token.return_value = token_record
 
     # Act
     result = await service.revoke_token(
@@ -587,15 +575,16 @@ async def test_revoke_token_different_client_graceful():
 
     # Assert
     assert result == {}
-    mock_token_repo.get_by_token.assert_called_once_with("ref_other_client_token")
-    mock_token_repo.revoke_token.assert_not_called()
-    mock_token_repo.revoke_family.assert_not_called()
+    mock_token_service.get_refresh_token.assert_called_once_with("ref_other_client_token")
+    mock_token_service.revoke_refresh_token.assert_not_called()
+    mock_token_service.revoke_refresh_token_family.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_revoke_token_access_token_hint_success():
     # Arrange
     import jwt
+
     mock_client_repo = AsyncMock()
     mock_redis = AsyncMock()
     service = OAuthService(mock_client_repo, mock_redis)
@@ -615,10 +604,13 @@ async def test_revoke_token_access_token_hint_success():
         "exp": future_time,
         "client_id": str(client_id),
     }
-    # Encode with some dummy key since we decode with verify_signature=False
+    # Encode with some dummy key since we mock the decode method
     access_token = jwt.encode(access_token_payload, "secret", algorithm="HS256")
 
     mock_token_service = AsyncMock()
+
+    # Mock the signature verification to bypass actual RSA key verification
+    service._decode_and_validate_jwt = AsyncMock(return_value=access_token_payload)
 
     # Act
     result = await service.revoke_token(
@@ -641,6 +633,7 @@ async def test_revoke_token_access_token_hint_success():
 async def test_revoke_token_access_token_no_hint_success():
     # Arrange
     import jwt
+
     mock_client_repo = AsyncMock()
     mock_redis = AsyncMock()
     service = OAuthService(mock_client_repo, mock_redis)
@@ -664,6 +657,9 @@ async def test_revoke_token_access_token_no_hint_success():
 
     mock_token_service = AsyncMock()
 
+    # Mock the signature verification to bypass actual RSA key verification
+    service._decode_and_validate_jwt = AsyncMock(return_value=access_token_payload)
+
     # Act
     result = await service.revoke_token(
         token=access_token,
@@ -684,6 +680,7 @@ async def test_revoke_token_access_token_no_hint_success():
 async def test_revoke_token_access_token_expired_no_blacklist():
     # Arrange
     import jwt
+
     mock_client_repo = AsyncMock()
     mock_redis = AsyncMock()
     service = OAuthService(mock_client_repo, mock_redis)
@@ -707,6 +704,9 @@ async def test_revoke_token_access_token_expired_no_blacklist():
 
     mock_token_service = AsyncMock()
 
+    # Mock signature verification to return None since expired tokens are not validated/blacklisted
+    service._decode_and_validate_jwt = AsyncMock(return_value=None)
+
     # Act
     result = await service.revoke_token(
         token=access_token,
@@ -723,6 +723,7 @@ async def test_revoke_token_access_token_expired_no_blacklist():
 async def test_revoke_token_access_token_wrong_client_no_blacklist():
     # Arrange
     import jwt
+
     mock_client_repo = AsyncMock()
     mock_redis = AsyncMock()
     service = OAuthService(mock_client_repo, mock_redis)
@@ -746,6 +747,9 @@ async def test_revoke_token_access_token_wrong_client_no_blacklist():
 
     mock_token_service = AsyncMock()
 
+    # Mock signature verification to return None since it belongs to a different client
+    service._decode_and_validate_jwt = AsyncMock(return_value=None)
+
     # Act
     result = await service.revoke_token(
         token=access_token,
@@ -757,3 +761,134 @@ async def test_revoke_token_access_token_wrong_client_no_blacklist():
     assert result == {}
     mock_redis.setex.assert_not_called()
 
+
+@pytest.mark.asyncio
+async def test_decode_and_validate_jwt_valid_signature():
+    # Arrange
+    import jwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from src.models.keys import SigningKey
+
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    # Generate real RSA key pair
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    client_id = uuid.uuid4()
+    kid = "test-key-id"
+
+    mock_signing_key = SigningKey(
+        kid=kid,
+        algorithm="RS256",
+        public_key_pem=public_pem.decode("utf-8"),
+    )
+
+    mock_key_service = AsyncMock()
+    mock_key_service.get_signing_key_by_kid.return_value = mock_signing_key
+
+    # Generate a real RS256 token
+    future_time = int(datetime.now(timezone.utc).timestamp()) + 100
+    access_token_payload = {
+        "jti": "jti_real_rsa",
+        "exp": future_time,
+        "client_id": str(client_id),
+        "aud": str(client_id),
+    }
+    access_token = jwt.encode(
+        access_token_payload,
+        private_pem,
+        algorithm="RS256",
+        headers={"kid": kid},
+    )
+
+    # Act
+    payload = await service._decode_and_validate_jwt(
+        token=access_token,
+        client_id_str=str(client_id),
+        key_service=mock_key_service,
+    )
+
+    # Assert
+    assert payload is not None
+    assert payload["jti"] == "jti_real_rsa"
+    assert payload["client_id"] == str(client_id)
+    mock_key_service.get_signing_key_by_kid.assert_called_once_with(kid)
+
+
+@pytest.mark.asyncio
+async def test_decode_and_validate_jwt_invalid_signature():
+    # Arrange
+    import jwt
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    from src.models.keys import SigningKey
+
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    # Generate real RSA key pair
+    private_key_1 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem_1 = private_key_1.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.TraditionalOpenSSL,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+
+    private_key_2 = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_pem_2 = private_key_2.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    client_id = uuid.uuid4()
+    kid = "test-key-id"
+
+    # Database has public_key_2, but token is signed with private_key_1
+    mock_signing_key = SigningKey(
+        kid=kid,
+        algorithm="RS256",
+        public_key_pem=public_pem_2.decode("utf-8"),
+    )
+
+    mock_key_service = AsyncMock()
+    mock_key_service.get_signing_key_by_kid.return_value = mock_signing_key
+
+    future_time = int(datetime.now(timezone.utc).timestamp()) + 100
+    access_token_payload = {
+        "jti": "jti_forged",
+        "exp": future_time,
+        "client_id": str(client_id),
+        "aud": str(client_id),
+    }
+    access_token = jwt.encode(
+        access_token_payload,
+        private_pem_1,
+        algorithm="RS256",
+        headers={"kid": kid},
+    )
+
+    # Act
+    payload = await service._decode_and_validate_jwt(
+        token=access_token,
+        client_id_str=str(client_id),
+        key_service=mock_key_service,
+    )
+
+    # Assert
+    assert payload is None
+    mock_key_service.get_signing_key_by_kid.assert_called_once_with(kid)
