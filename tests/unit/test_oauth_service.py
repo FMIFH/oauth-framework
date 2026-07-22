@@ -581,6 +581,44 @@ async def test_revoke_token_different_client_graceful():
 
 
 @pytest.mark.asyncio
+async def test_revoke_token_different_client_refresh_token_hint_graceful():
+    # Arrange
+    mock_client_repo = AsyncMock()
+    mock_redis = AsyncMock()
+    service = OAuthService(mock_client_repo, mock_redis)
+
+    client_id = uuid.uuid4()
+    mock_client = Client(
+        id=client_id,
+        client_name="Test Client",
+        client_type="public",
+    )
+    service.authenticate_client = AsyncMock(return_value=mock_client)
+
+    # Token belongs to another client
+    token_record = MagicMock()
+    token_record.id = uuid.uuid4()
+    token_record.client_id = uuid.uuid4()  # different client ID
+
+    mock_token_service = AsyncMock()
+    mock_token_service.get_refresh_token.return_value = token_record
+
+    # Act
+    result = await service.revoke_token(
+        token="ref_other_client_token",
+        token_service=mock_token_service,
+        client_id=str(client_id),
+        token_type_hint="refresh_token",
+    )
+
+    # Assert
+    assert result == {}
+    mock_token_service.get_refresh_token.assert_called_once_with("ref_other_client_token")
+    mock_token_service.revoke_refresh_token.assert_not_called()
+    mock_token_service.revoke_refresh_token_family.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_revoke_token_access_token_hint_success():
     # Arrange
     import jwt

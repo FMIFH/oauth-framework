@@ -64,14 +64,14 @@ class OAuthService:
             client_uuid = uuid.UUID(client_id)
         except ValueError:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid client ID format",
             )
 
         client = await self.client_repo.get_by_id(client_uuid)
         if not client:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Client not found",
             )
 
@@ -272,7 +272,7 @@ class OAuthService:
 
         if not client_id:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
+                status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid_client",
             )
         return client_id, client_secret
@@ -544,6 +544,54 @@ class OAuthService:
         if ttl > 0:
             await self.redis_pool.setex(f"token:blacklist:{jti}", ttl, "true")
 
+    async def _authenticate_client_for_revocation(
+        self,
+        auth_header: str | None,
+        client_id: str | None,
+        client_secret: str | None,
+    ) -> Client:
+        """Extract client credentials and authenticate the client for token revocation."""
+        extracted_id, extracted_secret = self._extract_client_credentials(
+            auth_header, client_id, client_secret
+        )
+        try:
+            return await self.authenticate_client(extracted_id, extracted_secret)
+        except HTTPException as e:
+            raise HTTPException(
+                status_code=e.status_code,
+                detail="invalid_client",
+            )
+
+    async def _revoke_access_token(
+        self,
+        token: str,
+        client_id_str: str,
+        key_service: KeyService | None,
+    ) -> bool:
+        """Attempt to decode, validate, and blacklist an access token.
+        Returns True if successful, False otherwise.
+        """
+        payload = await self._decode_and_validate_jwt(token, client_id_str, key_service)
+        if payload:
+            await self._blacklist_jwt(payload)
+            return True
+        return False
+
+    async def _revoke_refresh_token(
+        self,
+        token: str,
+        client_id: uuid.UUID,
+        token_service: TokenService,
+    ) -> bool:
+        """Attempt to retrieve and revoke a refresh token and its family.
+        Returns True if the token was found and revoked, False otherwise.
+        """
+        token_record = await token_service.get_refresh_token(token)
+        if token_record and token_record.client_id == client_id:
+            await token_service.revoke_refresh_token_family(token_record.parent_family_id)
+            return True
+        return False
+
     async def revoke_token(
         self,
         token: str,
@@ -567,44 +615,28 @@ class OAuthService:
                 detail="unsupported_token_type",
             )
 
-        # Extract client credentials from header or body
-        client_id, client_secret = self._extract_client_credentials(auth_header, client_id, client_secret)
-
         # Authenticate the client
-        try:
-            client = await self.authenticate_client(client_id, client_secret)
-        except HTTPException as e:
-            raise HTTPException(
-                status_code=e.status_code,
-                detail="invalid_client",
-            )
-
+        client = await self._authenticate_client_for_revocation(auth_header, client_id, client_secret)
         client_id_str = str(client.id)
 
-        # 1. Access Token Revocation
+        # 1. If hint is "access_token", try access token first, then fallback to refresh token
         if token_type_hint == "access_token":
-            payload = await self._decode_and_validate_jwt(token, client_id_str, key_service)
-            if payload:
-                await self._blacklist_jwt(payload)
+            if await self._revoke_access_token(token, client_id_str, key_service):
+                return {}
+            await self._revoke_refresh_token(token, client.id, token_service)
             return {}
 
-        # 2. Refresh Token Revocation
+        # 2. If hint is "refresh_token", try refresh token first, then fallback to access token
         if token_type_hint == "refresh_token":
-            token_record = await token_service.get_refresh_token(token)
-            if token_record and token_record.client_id == client.id:
-                await token_service.revoke_refresh_token_family(token_record.parent_family_id)
+            if await self._revoke_refresh_token(token, client.id, token_service):
+                return {}
+            await self._revoke_access_token(token, client_id_str, key_service)
             return {}
 
-        # 3. Dynamic Revocation (Hint is None)
-        payload = await self._decode_and_validate_jwt(token, client_id_str, key_service)
-        if payload:
-            await self._blacklist_jwt(payload)
+        # 3. No hint: try access token first, then fallback to refresh token
+        if await self._revoke_access_token(token, client_id_str, key_service):
             return {}
-
-        # Fallback to refresh token
-        token_record = await token_service.get_refresh_token(token)
-        if token_record and token_record.client_id == client.id:
-            await token_service.revoke_refresh_token_family(token_record.parent_family_id)
+        await self._revoke_refresh_token(token, client.id, token_service)
 
         # RFC 7009: Return empty dictionary to signal success without disclosing existence
         return {}

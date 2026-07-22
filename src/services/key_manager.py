@@ -199,7 +199,7 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
 
     key_repo = KeyRepository(db)
     key_service = KeyService(key_repo)
-
+    rotated_keys = []
     # 1. Fetch all active keys
     active_keys = await key_service.get_all_active_keys()
     if not active_keys:
@@ -215,7 +215,6 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
         )
         rotated_keys = [new_rs_key, new_es_key]
 
-    rotated_keys = []
     # Track algorithms that have been rotated, to avoid generating multiple keys of the same algorithm
     rotated_algorithms = set()
 
