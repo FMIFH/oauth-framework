@@ -7,11 +7,12 @@ from datetime import datetime, timedelta, timezone
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.redis import get_redis_client
 from src.models.keys import SigningKey
+from src.repositories.key_repo import KeyRepository
+from src.services.key_service import KeyService
 
 
 def encrypt_private_key(private_key_pem: bytes, master_key_hex: str) -> str:
@@ -81,23 +82,13 @@ async def jwks(session: AsyncSession) -> dict:
     except Exception:
         pass
 
-    # 2. Database query for active or recently deactivated keys (within 10 days grace period)
+    # 2. Query for active or recently deactivated keys (within 10 days grace period) via KeyService
     now = datetime.now(timezone.utc)
     grace_cutoff = now - timedelta(days=10)
 
-    result = await session.execute(
-        select(SigningKey).where(
-            or_(
-                SigningKey.is_active,
-                and_(
-                    SigningKey.is_active.is_(False),
-                    SigningKey.deactivated_at.isnot(None),
-                    SigningKey.deactivated_at >= grace_cutoff,
-                ),
-            )
-        )
-    )
-    active_keys = result.scalars().all()
+    key_repo = KeyRepository(session)
+    key_service = KeyService(key_repo)
+    active_keys = await key_service.get_active_or_recent_keys(grace_cutoff)
 
     jwk_keys = []
     for key in active_keys:
@@ -181,10 +172,10 @@ async def publish_new_key(
         is_active=True,
     )
 
-    # 5. Persist to database
-    db.add(signing_key)
-    await db.commit()
-    await db.refresh(signing_key)
+    # 5. Persist to database via KeyService
+    key_repo = KeyRepository(db)
+    key_service = KeyService(key_repo)
+    await key_service.create_key(signing_key)
 
     # 6. Clear 'jwks:cache' in Redis
     try:
@@ -206,9 +197,11 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
     now = datetime.now(timezone.utc)
     rotation_threshold = now - timedelta(days=30)
 
+    key_repo = KeyRepository(db)
+    key_service = KeyService(key_repo)
+    rotated_keys = []
     # 1. Fetch all active keys
-    result = await db.execute(select(SigningKey).where(SigningKey.is_active))
-    active_keys = result.scalars().all()
+    active_keys = await key_service.get_all_active_keys()
     if not active_keys:
         new_rs_key = await publish_new_key(
             db=db,
@@ -222,7 +215,6 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
         )
         rotated_keys = [new_rs_key, new_es_key]
 
-    rotated_keys = []
     # Track algorithms that have been rotated, to avoid generating multiple keys of the same algorithm
     rotated_algorithms = set()
 
@@ -232,7 +224,7 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
             # Mark old key as inactive and record deactivation timestamp
             old_key.is_active = False
             old_key.deactivated_at = now
-            db.add(old_key)
+            await key_service.update_key(old_key)
 
             # Generate a new key for this algorithm (if not already done in this run)
             if old_key.algorithm not in rotated_algorithms:
@@ -245,8 +237,6 @@ async def rotate_keys(db: AsyncSession, master_key_hex: str) -> list[SigningKey]
                 rotated_algorithms.add(old_key.algorithm)
 
     if rotated_keys:
-        # Explicit commit to save all changes
-        await db.commit()
         # Clear 'jwks:cache' in Redis
         try:
             redis_client = get_redis_client()

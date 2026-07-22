@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, Form, Query, Request
 from src.core.database import get_db
 from src.core.security import verify_cookie_value
 from src.services.key_manager import jwks
+from src.services.key_service import KeyService, get_key_service
 from src.services.oauth_service import OAuthService, get_oauth_service
 from src.services.token_service import TokenService, get_token_service
 
@@ -67,3 +68,26 @@ async def token(
 @router.get("/jwks")
 async def jwks_endpoints(session=Depends(get_db)):
     return await jwks(session=session)
+
+
+@router.post("/revoke")
+async def revoke(
+    request: Request,
+    token: str = Form(...),
+    client_id: str | None = Form(None),
+    client_secret: str | None = Form(None),
+    token_type_hint: str | None = Form(None),
+    oauth_service: OAuthService = Depends(get_oauth_service),
+    token_service: TokenService = Depends(get_token_service),
+    key_service: KeyService = Depends(get_key_service),
+):
+    auth_header = request.headers.get("Authorization")
+    return await oauth_service.revoke_token(
+        token=token,
+        token_type_hint=token_type_hint,
+        auth_header=auth_header,
+        client_id=client_id,
+        client_secret=client_secret,
+        token_service=token_service,
+        key_service=key_service,
+    )
