@@ -37,5 +37,8 @@ jobs:
       - name: Install Dependencies
         run: poetry install --no-interaction
 
+      - name: Copy Environment Configuration
+        run: cp .env.example .env
+
       - name: Run QA Pipeline
         run: make qa
