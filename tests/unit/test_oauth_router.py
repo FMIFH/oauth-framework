@@ -1,5 +1,7 @@
+import base64
 import urllib.parse
-from unittest.mock import AsyncMock, MagicMock
+import uuid
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException, status
@@ -153,7 +155,6 @@ async def test_authorize_invalid_scope(client, mock_oauth_service):
 
 @pytest.mark.asyncio
 async def test_token_auth_code_public_success(client, mock_oauth_service):
-    import uuid
 
     # Arrange
     client_uuid = uuid.uuid4()
@@ -192,8 +193,6 @@ async def test_token_auth_code_public_success(client, mock_oauth_service):
 
 @pytest.mark.asyncio
 async def test_token_auth_code_confidential_success(client, mock_oauth_service):
-    import base64
-    import uuid
 
     # Arrange
     client_uuid = uuid.uuid4()
@@ -232,7 +231,6 @@ async def test_token_auth_code_confidential_success(client, mock_oauth_service):
 @pytest.mark.asyncio
 async def test_token_auth_code_invalid_client(client, mock_oauth_service):
     # Arrange
-    from fastapi import HTTPException
 
     mock_oauth_service.exchange_token = AsyncMock(
         side_effect=HTTPException(status_code=401, detail="invalid_client")
@@ -255,9 +253,6 @@ async def test_token_auth_code_invalid_client(client, mock_oauth_service):
 
 @pytest.mark.asyncio
 async def test_token_auth_code_invalid_code(client, mock_oauth_service):
-    import uuid
-
-    from fastapi import HTTPException
 
     # Arrange
     client_uuid = uuid.uuid4()
@@ -282,9 +277,6 @@ async def test_token_auth_code_invalid_code(client, mock_oauth_service):
 
 @pytest.mark.asyncio
 async def test_token_auth_code_redirect_mismatch(client, mock_oauth_service):
-    import uuid
-
-    from fastapi import HTTPException
 
     # Arrange
     client_uuid = uuid.uuid4()
@@ -309,7 +301,6 @@ async def test_token_auth_code_redirect_mismatch(client, mock_oauth_service):
 
 @pytest.mark.asyncio
 async def test_token_client_credentials_success(client, mock_oauth_service):
-    import uuid
 
     # Arrange
     client_uuid = uuid.uuid4()
@@ -344,7 +335,6 @@ async def test_token_client_credentials_success(client, mock_oauth_service):
 
 @pytest.mark.asyncio
 async def test_token_refresh_token_success(client, mock_oauth_service):
-    import uuid
 
     # Arrange
     client_uuid = uuid.uuid4()
@@ -379,9 +369,6 @@ async def test_token_refresh_token_success(client, mock_oauth_service):
 
 @pytest.mark.asyncio
 async def test_token_unsupported_grant(client, mock_oauth_service):
-    import uuid
-
-    from fastapi import HTTPException
 
     # Arrange
     client_uuid = uuid.uuid4()
@@ -434,7 +421,6 @@ async def test_revoke_token_form_auth_success(client, mock_oauth_service):
 
 @pytest.mark.asyncio
 async def test_revoke_token_basic_auth_success(client, mock_oauth_service):
-    import base64
 
     # Arrange
     mock_oauth_service.revoke_token = AsyncMock(return_value={})
@@ -485,3 +471,18 @@ async def test_revoke_token_invalid_client_error(client, mock_oauth_service):
     # Assert
     assert response.status_code == status.HTTP_401_UNAUTHORIZED
     assert response.json()["detail"] == "invalid_client"
+
+
+def test_jwks_endpoint(client):
+
+    # Arrange
+    with patch("src.routers.oauth.jwks", new_callable=AsyncMock) as mock_jwks:
+        mock_jwks.return_value = {"keys": []}
+
+        # Act
+        response = client.get("/oauth/jwks")
+
+        # Assert
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"keys": []}
+        mock_jwks.assert_called_once()

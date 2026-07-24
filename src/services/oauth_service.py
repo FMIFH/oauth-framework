@@ -4,7 +4,7 @@ import json
 import secrets
 import urllib.parse
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import jwt
 from fastapi import Depends, HTTPException, status
@@ -13,16 +13,24 @@ from redis.asyncio import Redis
 
 from src.config import settings
 from src.core.redis import get_redis
+from src.core.security import verify_password
 from src.exceptions.invalid_scope_exception import InvalidScopeError
 from src.models.client import Client
+from src.repositories.authorization_code_repo import AuthorizationCodeRepository, get_authorization_code_repo
 from src.repositories.client_repo import ClientRepository, get_client_repository
 from src.services.key_service import KeyService
 from src.services.token_service import TokenService
 
 
 class OAuthService:
-    def __init__(self, client_repo: ClientRepository, redis_pool: Redis):
+    def __init__(
+        self,
+        client_repo: ClientRepository,
+        authorization_code_repo: AuthorizationCodeRepository,
+        redis_pool: Redis,
+    ):
         self.client_repo = client_repo
+        self.authorization_code_repo = authorization_code_repo
         self.redis_pool = redis_pool
 
     async def get_and_validate_client(self, client_id: str, redirect_uri: str) -> Client:
@@ -82,7 +90,6 @@ class OAuthService:
                     detail="Client secret is required for confidential clients",
                 )
             active_secrets = await self.client_repo.get_active_secrets(client.id)
-            from src.core.security import verify_password
 
             is_valid = False
             for secret in active_secrets:
@@ -114,31 +121,33 @@ class OAuthService:
         code_challenge: str,
         code_challenge_method: str,
     ) -> str:
-        """Generate an authorization code and persist it in Redis."""
+        """Generate an authorization code and persist it in the Database."""
         auth_code = secrets.token_urlsafe(32)
-        payload = {
-            "client_id": client_id,
-            "user_id": user_id,
-            "redirect_uri": redirect_uri,
-            "scope": scope,
-            "code_challenge": code_challenge,
-            "code_challenge_method": code_challenge_method,
-        }
-        key = f"auth:code:{auth_code}"
-        await self.redis_pool.setex(
-            key,
-            settings.auth_code_ttl,
-            json.dumps(payload),
+        # Always persist in DB first
+        await self.authorization_code_repo.create(
+            code=auth_code,
+            client_id=uuid.UUID(client_id),
+            user_id=uuid.UUID(user_id),
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            scope=scope,
+            redirect_uri=redirect_uri,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=settings.auth_code_ttl),
         )
         return auth_code
 
     async def consume_authorization_code(self, code: str) -> dict | None:
-        """Retrieve and delete the authorization code from Redis (one-time use)."""
-        key = f"auth:code:{code}"
-        data = await self.redis_pool.get(key)
-        if data:
-            await self.redis_pool.delete(key)
-            return json.loads(data)
+        """Retrieve and delete the authorization code from the Database (one-time use)."""
+        auth_code = await self.authorization_code_repo.consume_code(code)
+        if auth_code:
+            return {
+                "client_id": str(auth_code.client_id),
+                "user_id": str(auth_code.user_id),
+                "redirect_uri": auth_code.redirect_uri,
+                "scope": auth_code.scope,
+                "code_challenge": auth_code.code_challenge,
+                "code_challenge_method": auth_code.code_challenge_method,
+            }
         return None
 
     async def process_authorization_request(
@@ -644,7 +653,12 @@ class OAuthService:
 
 async def get_oauth_service(
     client_repo: ClientRepository = Depends(get_client_repository),
+    authorization_code_repo: AuthorizationCodeRepository = Depends(get_authorization_code_repo),
     redis: Redis = Depends(get_redis),
 ) -> OAuthService:
     """Dependency provider for OAuthService."""
-    return OAuthService(client_repo=client_repo, redis_pool=redis)
+    return OAuthService(
+        client_repo=client_repo,
+        authorization_code_repo=authorization_code_repo,
+        redis_pool=redis,
+    )

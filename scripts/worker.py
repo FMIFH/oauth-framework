@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from src.config import settings
 from src.core.database import close_db, get_sessionmaker
 from src.core.redis import close_redis
+from src.repositories.authorization_code_repo import AuthorizationCodeRepository
 from src.services.key_manager import rotate_keys
 
 
@@ -24,16 +25,18 @@ async def check_and_rotate():
     sessionmaker = get_sessionmaker()
     try:
         async with sessionmaker() as db:
-            rotated = await rotate_keys(
-                db=db,
-                master_key_hex=settings.master_encryption_key
-            )
+            rotated = await rotate_keys(db=db, master_key_hex=settings.master_encryption_key)
             if rotated:
                 print(f"[+] Worker successfully rotated {len(rotated)} key(s):")
                 for key in rotated:
                     print(f"    - Algorithm: {key.algorithm}, Kid: {key.kid}")
             else:
                 print("[+] Worker checked keys: no rotation required today.")
+
+            # 2. Clean up expired authorization codes
+            auth_code_repo = AuthorizationCodeRepository(db)
+            await auth_code_repo.delete_expired_codes()
+            print("[+] Worker successfully pruned expired authorization codes.")
     except Exception as e:
         print(f"[-] Worker encountered error during rotation check: {e}", file=sys.stderr)
 

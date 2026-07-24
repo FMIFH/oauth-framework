@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.models import User
-from src.repositories.user_repo import UserRepository
+from src.repositories.user_repo import UserRepository, get_user_repository
 
 
 @pytest.mark.asyncio
@@ -127,3 +127,75 @@ async def test_lock_and_unlock_user():
     assert unlocked_user.is_locked is False
     assert unlocked_user.locked_at is None
     mock_db.commit.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_activate_and_deactivate_user():
+    mock_db = AsyncMock()
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
+
+    repo = UserRepository(mock_db)
+    user_id = uuid.uuid4()
+    mock_user = User(id=user_id, email="test@example.com", password_hash="hash", is_active=False)
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    # Act - Activate
+    activated_user = await repo.activate_user(user_id)
+    assert activated_user is not None
+    assert activated_user.is_active is True
+
+    # Act - Deactivate
+    deactivated_user = await repo.deactivate_user(user_id)
+    assert deactivated_user is not None
+    assert deactivated_user.is_active is False
+
+
+@pytest.mark.asyncio
+async def test_delete_user():
+    mock_db = AsyncMock()
+    mock_db.commit = AsyncMock()
+    repo = UserRepository(mock_db)
+    user_id = uuid.uuid4()
+    mock_user = User(id=user_id, email="test@example.com", password_hash="hash")
+
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = mock_user
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    # Delete existing
+    success = await repo.delete_user(user_id)
+    assert success is True
+    mock_db.delete.assert_called_once_with(mock_user)
+
+    # Delete non-existing
+    mock_result.scalar_one_or_none.return_value = None
+    success_not_found = await repo.delete_user(uuid.uuid4())
+    assert success_not_found is False
+
+
+@pytest.mark.asyncio
+async def test_user_repo_methods_not_found():
+    mock_db = AsyncMock()
+    repo = UserRepository(mock_db)
+    mock_result = MagicMock()
+    mock_result.scalar_one_or_none.return_value = None
+    mock_db.execute = AsyncMock(return_value=mock_result)
+
+    user_id = uuid.uuid4()
+    assert await repo.lock_user(user_id) is None
+    assert await repo.unlock_user(user_id) is None
+    assert await repo.activate_user(user_id) is None
+    assert await repo.deactivate_user(user_id) is None
+
+
+@pytest.mark.asyncio
+async def test_get_user_repository():
+
+    mock_db = AsyncMock()
+    repo = await get_user_repository(mock_db)
+    assert isinstance(repo, UserRepository)
+    assert repo.db is mock_db
