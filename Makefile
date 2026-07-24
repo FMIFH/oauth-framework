@@ -68,5 +68,6 @@ clean: ## Clean cache files, temporary files, and coverage outputs
 	@echo "Clean completed."
 
 .PHONY: qa
-qa: format-check lint type-check test ## Run full QA pipeline (format check, lint, type check, tests)
+qa: format-check lint type-check ## Run full QA pipeline (format check, lint, type check, tests with 100% coverage)
+	$(PYTEST) --cov=$(SRC_DIR) --cov-report=term-missing --cov-fail-under=100
 	@echo "QA pipeline passed successfully!"

@@ -55,6 +55,11 @@ line-length = 110
 
 
 [tool.ruff.lint]
-select = ["E", "W", "F", "C", "N", "I"]
+select = ["E", "W", "F", "C", "N", "I", "PLC0415"]
 ignore = ["C408", "N815"]
 fixable = ["ALL"]
+
+[tool.coverage.run]
+omit = [
+    "src/gunicorn_conf.py",
+]
