@@ -34,13 +34,14 @@ class AuthorizationCodeRepository:
             redirect_uri=redirect_uri,
             expires_at=expires_at,
         )
-        print(f"Creating authorization code: {auth_code}")
         self.session.add(auth_code)
         await self.session.commit()
         return auth_code
 
     async def consume_code(self, code: str) -> AuthorizationCode | None:
-        result = await self.session.execute(select(AuthorizationCode).where(AuthorizationCode.code == code))
+        result = await self.session.execute(
+            select(AuthorizationCode).where(AuthorizationCode.code == code).with_for_update()
+        )
         auth_code = result.scalar_one_or_none()
         if auth_code:
             await self.session.delete(auth_code)

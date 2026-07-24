@@ -36,7 +36,13 @@ def mock_background_tasks():
 
 @pytest.fixture
 def mock_redis():
-    return AsyncMock()
+    mock = AsyncMock()
+
+    async def getdel_side_effect(key):
+        return await mock.get(key)
+
+    mock.getdel.side_effect = getdel_side_effect
+    return mock
 
 
 @pytest.fixture
@@ -206,6 +212,27 @@ async def test_create_authorization_code(mock_redis, mock_auth_code_repo, servic
 
 
 @pytest.mark.asyncio
+async def test_create_authorization_code_redis_error(mock_redis, mock_auth_code_repo, service):
+    # Arrange
+    client_id = str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
+    redirect_uri = "https://example.com/callback"
+    scope = "openid"
+    challenge = "challenge_str"
+    method = "S256"
+
+    mock_redis.setex = AsyncMock(side_effect=Exception("Redis error"))
+
+    # Act
+    code = await service.create_authorization_code(client_id, user_id, redirect_uri, scope, challenge, method)
+
+    # Assert
+    assert len(code) > 20
+    mock_redis.setex.assert_called_once()
+    mock_auth_code_repo.create.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_consume_authorization_code_exists(
     mock_redis, mock_auth_code_repo, mock_background_tasks, service
 ):
@@ -219,18 +246,16 @@ async def test_consume_authorization_code_exists(
         "code_challenge": "challenge",
         "code_challenge_method": "S256",
     }
-    mock_redis.get = AsyncMock(return_value=json.dumps(payload))
-    mock_redis.delete = AsyncMock()
+    mock_redis.getdel = AsyncMock(return_value=json.dumps(payload))
 
     # Act
     consumed = await service.consume_authorization_code(code)
 
     # Assert
     assert consumed == payload
-    mock_redis.get.assert_called_once_with(f"auth:code:{code}")
-    mock_redis.delete.assert_called_once_with(f"auth:code:{code}")
-    mock_background_tasks.add_task.assert_called_once_with(mock_auth_code_repo.consume_code, code)
+    mock_redis.getdel.assert_called_once_with(f"auth:code:{code}")
     mock_auth_code_repo.consume_code.assert_not_called()
+    mock_background_tasks.add_task.assert_called_once_with(service.authorization_code_repo.consume_code, code)
 
 
 @pytest.mark.asyncio
@@ -239,8 +264,7 @@ async def test_consume_authorization_code_db_fallback(
 ):
     # Arrange
     code = "test_auth_code"
-    mock_redis.get = AsyncMock(return_value=None)
-    mock_redis.delete = AsyncMock()
+    mock_redis.getdel = AsyncMock(side_effect=Exception("Redis connection lost"))
 
     # Mock AuthorizationCode model
 
@@ -269,8 +293,7 @@ async def test_consume_authorization_code_db_fallback(
     assert consumed["code_challenge"] == mock_auth_code.code_challenge
     assert consumed["code_challenge_method"] == mock_auth_code.code_challenge_method
 
-    mock_redis.get.assert_called_once_with(f"auth:code:{code}")
-    mock_redis.delete.assert_not_called()
+    mock_redis.getdel.assert_called_once_with(f"auth:code:{code}")
     mock_background_tasks.add_task.assert_not_called()
     mock_auth_code_repo.consume_code.assert_called_once_with(code)
 
@@ -281,8 +304,7 @@ async def test_consume_authorization_code_missing(
 ):
     # Arrange
     code = "test_auth_code"
-    mock_redis.get = AsyncMock(return_value=None)
-    mock_redis.delete = AsyncMock()
+    mock_redis.getdel = AsyncMock(return_value=None)
     mock_auth_code_repo.consume_code = AsyncMock(return_value=None)
 
     # Act
@@ -290,8 +312,26 @@ async def test_consume_authorization_code_missing(
 
     # Assert
     assert consumed is None
-    mock_redis.get.assert_called_once_with(f"auth:code:{code}")
-    mock_redis.delete.assert_not_called()
+    mock_redis.getdel.assert_called_once_with(f"auth:code:{code}")
+    mock_background_tasks.add_task.assert_not_called()
+    mock_auth_code_repo.consume_code.assert_called_once_with(code)
+
+
+@pytest.mark.asyncio
+async def test_consume_authorization_code_db_fallback_missing(
+    mock_redis, mock_auth_code_repo, mock_background_tasks, service
+):
+    # Arrange
+    code = "test_auth_code"
+    mock_redis.getdel = AsyncMock(side_effect=Exception("Redis connection lost"))
+    mock_auth_code_repo.consume_code = AsyncMock(return_value=None)
+
+    # Act
+    consumed = await service.consume_authorization_code(code)
+
+    # Assert
+    assert consumed is None
+    mock_redis.getdel.assert_called_once_with(f"auth:code:{code}")
     mock_background_tasks.add_task.assert_not_called()
     mock_auth_code_repo.consume_code.assert_called_once_with(code)
 
@@ -1269,6 +1309,7 @@ async def test_get_oauth_service():
     assert isinstance(service_inst, OAuthService)
     assert service_inst.client_repo is mock_client_repo
     assert service_inst.authorization_code_repo is mock_auth_repo
+    assert service_inst.background_tasks is mock_bg
     assert service_inst.redis_pool is mock_redis
 
 
