@@ -6,6 +6,7 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 
+from src.core.security import hash_password
 from src.main_as import app
 from src.models import User
 from src.repositories.user_repo import UserRepository, get_user_repository
@@ -129,7 +130,6 @@ def test_login_page_renders(client):
 
 def test_login_success_without_oauth(client, mock_user_repo):
     # Arrange
-    from src.core.security import hash_password
 
     email = "user@example.com"
     password = "correct_password"
@@ -160,7 +160,6 @@ def test_login_success_without_oauth(client, mock_user_repo):
 
 def test_login_success_with_oauth(client, mock_user_repo):
     # Arrange
-    from src.core.security import hash_password
 
     email = "user@example.com"
     password = "correct_password"
@@ -212,3 +211,38 @@ def test_login_failure(client, mock_user_repo):
     location = response.headers["location"]
     assert "/users/login" in location
     assert "error=Invalid+email+or+password" in location
+
+
+def test_login_failure_with_all_oauth_params(client, mock_user_repo):
+    # Arrange
+    mock_user_repo.get_by_email.return_value = None
+
+    # Act
+    response = client.post(
+        "/users/login",
+        data={
+            "email": "wrong@example.com",
+            "password": "wrong_password",
+            "response_type": "code",
+            "client_id": "test-client",
+            "redirect_uri": "http://localhost/callback",
+            "scope": "openid profile",
+            "state": "xyz",
+            "code_challenge": "challenge_123",
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+
+    # Assert (Should redirect back to login page with all error and oauth parameters)
+    assert response.status_code == status.HTTP_303_SEE_OTHER
+    location = response.headers["location"]
+    assert "/users/login" in location
+    assert "error=Invalid+email+or+password" in location
+    assert "response_type=code" in location
+    assert "client_id=test-client" in location
+    assert "redirect_uri=http%3A%2F%2Flocalhost%2Fcallback" in location
+    assert "scope=openid+profile" in location
+    assert "state=xyz" in location
+    assert "code_challenge=challenge_123" in location
+    assert "code_challenge_method=S256" in location

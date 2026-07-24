@@ -1,3 +1,5 @@
+import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,6 +12,7 @@ from src.services.key_manager import (
     generate_key_pair,
     jwks,
     publish_new_key,
+    rotate_keys,
 )
 
 
@@ -196,10 +199,6 @@ async def test_jwks():
 
 @pytest.mark.asyncio
 async def test_rotate_keys_no_old_keys():
-    # Arrange
-    from datetime import datetime, timezone
-
-    from src.services.key_manager import rotate_keys
 
     # An active key that is only 5 days old
     key_rs = SigningKey(
@@ -230,9 +229,6 @@ async def test_rotate_keys_no_old_keys():
 @pytest.mark.asyncio
 async def test_rotate_keys_with_old_keys(monkeypatch):
     # Arrange
-    from datetime import datetime, timedelta, timezone
-
-    from src.services.key_manager import rotate_keys
 
     # Mock publish_new_key so we don't actually generate a heavy RSA/EC key
     new_key_mock = SigningKey(
@@ -279,7 +275,6 @@ async def test_rotate_keys_with_old_keys(monkeypatch):
 @pytest.mark.asyncio
 async def test_jwks_grace_period():
     # Arrange
-    from datetime import datetime, timedelta, timezone
 
     rs_priv, rs_pub = generate_key_pair("RS256")
 
@@ -317,3 +312,140 @@ async def test_jwks_grace_period():
     assert "active-key-id" in kids
     assert "grace-key-id" in kids
     assert "expired-key-id" not in kids
+
+
+@pytest.mark.asyncio
+async def test_jwks_cached(mock_redis):
+    # Arrange
+
+    mock_redis.get.return_value = json.dumps({"keys": [{"kid": "cached-key"}]})
+    mock_db = AsyncMock()
+
+    # Act
+    result = await jwks(mock_db)
+
+    # Assert
+    assert result == {"keys": [{"kid": "cached-key"}]}
+    mock_redis.get.assert_called_once_with("jwks:cache")
+    mock_db.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_jwks_redis_exception_get(mock_redis):
+    # Arrange
+    mock_redis.get.side_effect = Exception("redis error")
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_db = AsyncMock()
+    mock_db.execute.return_value = mock_result
+
+    # Act
+    result = await jwks(mock_db)
+
+    # Assert
+    assert result == {"keys": []}
+
+
+@pytest.mark.asyncio
+async def test_jwks_redis_exception_set(mock_redis):
+    # Arrange
+    mock_redis.get.return_value = None
+    mock_redis.set.side_effect = Exception("redis error")
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    mock_db = AsyncMock()
+    mock_db.execute.return_value = mock_result
+
+    # Act
+    result = await jwks(mock_db)
+
+    # Assert
+    assert result == {"keys": []}
+
+
+@pytest.mark.asyncio
+async def test_publish_new_key_redis_exception_delete(mock_redis):
+    # Arrange
+    mock_redis.delete.side_effect = Exception("redis error")
+    mock_db = AsyncMock()
+    mock_db.add = MagicMock()
+    mock_db.commit = AsyncMock()
+    mock_db.refresh = AsyncMock()
+
+    # Act
+    signing_key = await publish_new_key(
+        db=mock_db,
+        algorithm="RS256",
+        master_key_hex="a" * 64,
+        kid="custom-rs256-kid",
+    )
+
+    # Assert
+    assert signing_key.kid == "custom-rs256-kid"
+
+
+@pytest.mark.asyncio
+async def test_rotate_keys_no_active_keys(monkeypatch):
+    # Arrange
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []  # No active keys
+
+    mock_db = AsyncMock()
+    mock_db.execute.return_value = mock_result
+
+    # Mock publish_new_key
+    mock_rs_key = SigningKey(kid="new-rs-key", algorithm="RS256", is_active=True)
+    mock_es_key = SigningKey(kid="new-es-key", algorithm="ES256", is_active=True)
+
+    async def mock_publish(db, algorithm, master_key_hex, kid=None):
+        if algorithm == "RS256":
+            return mock_rs_key
+        else:
+            return mock_es_key
+
+    monkeypatch.setattr("src.services.key_manager.publish_new_key", mock_publish)
+
+    # Act
+    rotated = await rotate_keys(mock_db, master_key_hex="a" * 64)
+
+    # Assert
+    assert len(rotated) == 2
+    assert rotated[0] == mock_rs_key
+    assert rotated[1] == mock_es_key
+
+
+@pytest.mark.asyncio
+async def test_rotate_keys_redis_exception_delete(mock_redis, monkeypatch):
+    # Arrange
+
+    mock_redis.delete.side_effect = Exception("redis error")
+
+    old_key = SigningKey(
+        kid="old-key-id",
+        algorithm="RS256",
+        encrypted_private_key="old_encrypted",
+        public_key_pem="old_pub",
+        is_active=True,
+        created_at=datetime.now(timezone.utc) - timedelta(days=35),
+    )
+
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = [old_key]
+
+    mock_db = AsyncMock()
+    mock_db.add = MagicMock()
+    mock_db.execute.return_value = mock_result
+
+    new_key_mock = SigningKey(kid="new-key-id", algorithm="RS256", is_active=True)
+
+    async def mock_publish(db, algorithm, master_key_hex, kid=None):
+        return new_key_mock
+
+    monkeypatch.setattr("src.services.key_manager.publish_new_key", mock_publish)
+
+    # Act
+    rotated = await rotate_keys(mock_db, master_key_hex="a" * 64)
+
+    # Assert
+    assert len(rotated) == 1
+    assert rotated[0] == new_key_mock

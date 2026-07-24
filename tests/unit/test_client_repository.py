@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.models import Client, ClientSecret
-from src.repositories.client_repo import ClientRepository
+from src.repositories.client_repo import ClientRepository, get_client_repository
 
 
 @pytest.mark.asyncio
@@ -279,3 +279,12 @@ async def test_delete_client_secret_not_exists():
     # Assert
     assert success is False
     mock_db.delete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_client_repository():
+
+    mock_db = AsyncMock()
+    repo = await get_client_repository(mock_db)
+    assert isinstance(repo, ClientRepository)
+    assert repo.db is mock_db

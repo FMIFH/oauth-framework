@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from src.core.security import hash_password, sign_cookie_value, verify_cookie_value, verify_password
 
 
@@ -31,3 +33,9 @@ def test_sign_and_verify_cookie_value():
     assert verify_cookie_value(signed + "extra") is None
     assert verify_cookie_value(None) is None
     assert verify_cookie_value("") is None
+
+
+def test_verify_cookie_value_exception():
+
+    with patch("hmac.new", side_effect=Exception("mocked exception")):
+        assert verify_cookie_value("value.signature") is None
