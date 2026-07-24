@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from fastapi import Depends
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import make_transient
 
 from src.core.database import get_db
 from src.models.token import AuthorizationCode
@@ -47,6 +48,7 @@ class AuthorizationCodeRepository:
         if auth_code:
             await self.session.delete(auth_code)
             await self.session.commit()
+            make_transient(auth_code)  # Detach the instance from the session
         return auth_code
 
     async def delete_expired_codes(self) -> None:
