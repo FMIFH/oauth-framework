@@ -11,6 +11,7 @@ import os
 import sys
 
 from alembic.config import Config
+from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -31,7 +32,7 @@ async def check_db_connection(dsn: str) -> bool:
     try:
         async with engine.connect() as conn:
             # We must await the execution for async connections in sqlalchemy 2.0
-            from sqlalchemy import text
+
             await conn.execute(text("SELECT 1"))
         await engine.dispose()
         return True
@@ -120,9 +121,7 @@ def main() -> None:
     parent_parser.add_argument("--timeout", type=int, default=60, help="Max wait timeout in seconds")
     parent_parser.add_argument("--interval", type=int, default=2, help="Retry interval in seconds")
 
-    parser = argparse.ArgumentParser(
-        description="Alembic database migrations manager for OAuth Framework."
-    )
+    parser = argparse.ArgumentParser(description="Alembic database migrations manager for OAuth Framework.")
 
     subparsers = parser.add_subparsers(dest="command", help="Migration command to run")
 
@@ -130,17 +129,27 @@ def main() -> None:
     subparsers.add_parser("wait", parents=[parent_parser], help="Wait for database to be ready")
 
     # Upgrade command
-    parser_upgrade = subparsers.add_parser("upgrade", parents=[parent_parser], help="Run database migrations to latest/head")
+    parser_upgrade = subparsers.add_parser(
+        "upgrade", parents=[parent_parser], help="Run database migrations to latest/head"
+    )
     parser_upgrade.add_argument("revision", nargs="?", default="head", help="Revision target (default: head)")
 
     # Downgrade command
-    parser_downgrade = subparsers.add_parser("downgrade", parents=[parent_parser], help="Revert database migrations")
-    parser_downgrade.add_argument("revision", nargs="?", default="-1", help="Revision target or offset, e.g. -1 (default: -1)")
+    parser_downgrade = subparsers.add_parser(
+        "downgrade", parents=[parent_parser], help="Revert database migrations"
+    )
+    parser_downgrade.add_argument(
+        "revision", nargs="?", default="-1", help="Revision target or offset, e.g. -1 (default: -1)"
+    )
 
     # Revision command
-    parser_revision = subparsers.add_parser("revision", parents=[parent_parser], help="Generate a new migration revision")
+    parser_revision = subparsers.add_parser(
+        "revision", parents=[parent_parser], help="Generate a new migration revision"
+    )
     parser_revision.add_argument("-m", "--message", required=True, help="Migration description message")
-    parser_revision.add_argument("--no-autogenerate", action="store_true", help="Disable autogenerate (create blank template)")
+    parser_revision.add_argument(
+        "--no-autogenerate", action="store_true", help="Disable autogenerate (create blank template)"
+    )
 
     # History command
     subparsers.add_parser("history", parents=[parent_parser], help="Show migration history list")
