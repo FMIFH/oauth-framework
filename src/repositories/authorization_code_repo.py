@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime, timezone
 
 from fastapi import Depends
@@ -15,8 +16,8 @@ class AuthorizationCodeRepository:
     async def create(
         self,
         code: str,
-        client_id: str,
-        user_id: str,
+        client_id: uuid.UUID,
+        user_id: uuid.UUID,
         code_challenge: str,
         code_challenge_method: str,
         scope: str,

@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import jwt
-from fastapi import BackgroundTasks, Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from redis.asyncio import Redis
 
@@ -27,12 +27,10 @@ class OAuthService:
         self,
         client_repo: ClientRepository,
         authorization_code_repo: AuthorizationCodeRepository,
-        background_tasks: BackgroundTasks,
         redis_pool: Redis,
     ):
         self.client_repo = client_repo
         self.authorization_code_repo = authorization_code_repo
-        self.background_tasks = background_tasks
         self.redis_pool = redis_pool
 
     async def get_and_validate_client(self, client_id: str, redirect_uri: str) -> Client:
@@ -123,58 +121,23 @@ class OAuthService:
         code_challenge: str,
         code_challenge_method: str,
     ) -> str:
-        """Generate an authorization code and persist it in Database and Redis."""
+        """Generate an authorization code and persist it in the Database."""
         auth_code = secrets.token_urlsafe(32)
-        payload = {
-            "client_id": client_id,
-            "user_id": user_id,
-            "redirect_uri": redirect_uri,
-            "scope": scope,
-            "code_challenge": code_challenge,
-            "code_challenge_method": code_challenge_method,
-        }
         # Always persist in DB first
         await self.authorization_code_repo.create(
             code=auth_code,
-            client_id=client_id,
-            user_id=user_id,
+            client_id=uuid.UUID(client_id),
+            user_id=uuid.UUID(user_id),
             code_challenge=code_challenge,
             code_challenge_method=code_challenge_method,
             scope=scope,
             redirect_uri=redirect_uri,
             expires_at=datetime.now(timezone.utc) + timedelta(seconds=settings.auth_code_ttl),
         )
-        # Try to cache in Redis, but gracefully log if Redis is down
-        try:
-            key = f"auth:code:{auth_code}"
-            await self.redis_pool.setex(
-                key,
-                settings.auth_code_ttl,
-                json.dumps(payload),
-            )
-        except Exception:
-            pass
         return auth_code
 
     async def consume_authorization_code(self, code: str) -> dict | None:
-        """Retrieve and delete the authorization code from Redis or Database (one-time use)."""
-        key = f"auth:code:{code}"
-        try:
-            data = await self.redis_pool.getdel(key)
-            redis_healthy = True
-        except Exception:
-            data = None
-            redis_healthy = False
-
-        if redis_healthy:
-            if data:
-                # Code found in Redis. Deletion from DB can be done asynchronously!
-                # Because Redis is healthy, any replay attack of this code will hit Redis,
-                # return a miss, and not check the DB. So async deletion is 100% safe.
-                self.background_tasks.add_task(self.authorization_code_repo.consume_code, code)
-                return json.loads(data)
-
-        # Redis is down or code not found in Redis. Fall back to the database synchronously.
+        """Retrieve and delete the authorization code from the Database (one-time use)."""
         auth_code = await self.authorization_code_repo.consume_code(code)
         if auth_code:
             return {
@@ -689,7 +652,6 @@ class OAuthService:
 
 
 async def get_oauth_service(
-    background_tasks: BackgroundTasks,
     client_repo: ClientRepository = Depends(get_client_repository),
     authorization_code_repo: AuthorizationCodeRepository = Depends(get_authorization_code_repo),
     redis: Redis = Depends(get_redis),
@@ -698,6 +660,5 @@ async def get_oauth_service(
     return OAuthService(
         client_repo=client_repo,
         authorization_code_repo=authorization_code_repo,
-        background_tasks=background_tasks,
         redis_pool=redis,
     )
